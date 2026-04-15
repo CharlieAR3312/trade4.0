@@ -1,0 +1,36 @@
+# Entorno virtual
+venv/
+env/
+ENV/
+
+# Archivos de entorno (CLAVES API)
+.env
+.env.local
+.env.production
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Logs y datos
+logs/
+data/
+*.log
+*.csv
+*.json
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Archivos de prueba
+test_*.py
