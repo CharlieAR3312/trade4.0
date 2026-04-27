@@ -1,6 +1,11 @@
 from __future__ import annotations
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Asegurar carga de .env ANTES de inicializar Config
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=_env_path)
 
 class Config:
     SYMBOL = "BTCUSDT"
@@ -9,22 +14,26 @@ class Config:
     PRICE_INTERVAL_SECONDS = 15
     
     # Configuracion de Volatilidad (ATR y RSI)
-    BASE_SELL_THRESHOLD_PCT = float(os.getenv("BOT_MIN_SELL_THRESHOLD_PCT", "0.015")) # 1.5% base
-    BASE_BUY_LEVEL_1_PCT = float(os.getenv("BOT_BUY_LEVEL_1_PCT", "0.020")) # 2.0% base
-    BASE_BUY_LEVEL_2_PCT = float(os.getenv("BOT_BUY_LEVEL_2_PCT", "0.040")) # 4.0% base
+    BASE_SELL_THRESHOLD_PCT = float(os.getenv("BOT_MIN_SELL_THRESHOLD_PCT", "0.015"))
+    BASE_BUY_LEVEL_1_PCT = float(os.getenv("BOT_BUY_LEVEL_1_PCT", "0.020"))
+    BASE_BUY_LEVEL_2_PCT = float(os.getenv("BOT_BUY_LEVEL_2_PCT", "0.040"))
     
-    ATR_MULTIPLIER_SELL = 0.5    # Vender al 50% del ATR
-    ATR_MULTIPLIER_BUY_1 = 0.8   # Comprar nivel 1 al 80% del ATR
-    ATR_MULTIPLIER_BUY_2 = 1.5   # Comprar nivel 2 al 150% del ATR
+    ATR_MULTIPLIER_SELL = 0.5
+    ATR_MULTIPLIER_BUY_1 = 0.8
+    ATR_MULTIPLIER_BUY_2 = 1.5
     
     KLINES_INTERVAL = "15m"
     RSI_PERIOD = 14
     RSI_OVERSOLD = 30
     RSI_OVERBOUGHT = 70
 
-    PROFIT_SPLIT_USDT_PCT = 0.50 # 50% USDT, 50% BTC
+    PROFIT_SPLIT_USDT_PCT = 0.50
 
-    TRAILING_STOP_PCT = float(os.getenv("BOT_TRAILING_STOP_PCT", "0.005")) # 0.5%
+    # Risk Management
+    STOP_LOSS_ATR_MULTIPLIER = float(os.getenv("BOT_STOP_LOSS_ATR_MULT", "1.5"))
+    RISK_PER_TRADE_PCT = float(os.getenv("BOT_RISK_PER_TRADE_PCT", "0.015")) # Riesgo del 1.5% del capital total
+    TRAILING_STOP_PCT = float(os.getenv("BOT_TRAILING_STOP_PCT", "0.005"))
+
     BUY_LEVEL_1_USDT_PCT = 0.60
     BUY_LEVEL_2_USDT_PCT = 0.40
     MAX_SELL_PCT_PER_CYCLE = 0.15
@@ -41,6 +50,7 @@ class Config:
     ORDER_RETRY_BASE_SECONDS = 5
     TRADING_MODE = os.getenv("BOT_TRADING_MODE", "paper").lower()
     TELEGRAM_AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_AUTHORIZED_USER_ID", "0"))
+    
     ROOT_DIR = Path(__file__).resolve().parent.parent
     LOG_DIR = ROOT_DIR / "logs"
     DATA_DIR = ROOT_DIR / "data"

@@ -63,14 +63,11 @@ class StateMachine:
             self.average_buy_price = 0.0
             self.total_btc_bought = 0.0
         else:
-            # Partial sell, reduce the invested usdt and btc proportionally, keep the same average price
-            fraction_sold = btc_sold / self.total_btc_bought if self.total_btc_bought > 0 else 0
-            self.total_usdt_invested -= self.total_usdt_invested * fraction_sold
             self.total_btc_bought -= btc_sold
+            self.total_usdt_invested = self.total_btc_bought * self.average_buy_price
             if self.total_usdt_invested <= 0:
                 self.buy_level_1_done = False
                 self.buy_level_2_done = False
-
         self.register_operation("VENTA")
 
     def register_buy(self, level: int, usdt_amount: float = 0.0, btc_amount: float = 0.0, price: float = 0.0) -> None:
@@ -79,15 +76,23 @@ class StateMachine:
         elif level == 2:
             self.buy_level_2_done = True
         
-        # Calculate new average buy price
-        if btc_amount > 0 and price > 0:
+        if btc_amount > 0 and usdt_amount > 0:
             new_total_btc = self.total_btc_bought + btc_amount
-            new_total_cost = (self.total_btc_bought * self.average_buy_price) + (btc_amount * price)
+            new_total_cost = self.total_usdt_invested + usdt_amount
             self.average_buy_price = new_total_cost / new_total_btc
             self.total_btc_bought = new_total_btc
+            self.total_usdt_invested = new_total_cost
             
-        self.total_usdt_invested += usdt_amount
         self.register_operation(f"COMPRA_NIVEL_{level}")
+
+    def check_reconciliation(self, real_btc_balance: float) -> None:
+        if self.state == BotState.MODO_SEGURO:
+            return
+        diff = abs(real_btc_balance - self.total_btc_bought)
+        # Permite una tolerancia muy pequeña (ej. polvo dejado por comisiones)
+        if diff > getattr(Config, "MIN_BTC_TO_SELL", 0.0001):
+            logger.critical("Inconsistencia detectada: DB tiene %.8f BTC, Exchange tiene %.8f BTC", self.total_btc_bought, real_btc_balance)
+            self.enter_safe_mode("Inconsistencia de balance detectada. Reconciliacion manual requerida.")
 
     def register_usdt_received(self) -> None:
         self.usdt_idle_since = time.time()

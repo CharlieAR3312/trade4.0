@@ -4,20 +4,22 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-# Cambiar la ruta del working directory al lugar donde se clone el repo en GCloud
+User=trading_bot
+Group=trading_bot
 WorkingDirectory=/opt/bitcoin-bot
 
-# El entorno virtual de Python, si se usa uno. Si no, usar /usr/bin/python3
 ExecStart=/opt/bitcoin-bot/venv/bin/python3 -m bitcoin_bot.main
 
-# Reiniciar automáticamente si el bot falla (ej. pérdida de conexión que no se pudo recuperar tras muchos intentos)
 Restart=on-failure
 RestartSec=10
 
-# Entorno
 Environment="PYTHONUNBUFFERED=1"
-# La ruta al .env si es necesario (python-dotenv lo lee desde el root del bot si se ejecuta desde allí)
+
+# Security hardening
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

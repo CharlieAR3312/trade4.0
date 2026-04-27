@@ -24,28 +24,31 @@ class DecisionEngine:
     def on_price_tick(self, price_engine) -> None:
         if not self.state_machine.is_safe() or not price_engine.is_fresh():
             return
-        
-        self.volatility_engine.update()
             
+        self.volatility_engine.update()
         current_price = price_engine.current_price
         if current_price is None:
+            return
+            
+        snapshot = self.market_client.get_portfolio_snapshot(Config.SYMBOL)
+        if snapshot is None:
+            return
+            
+        self.state_machine.check_reconciliation(snapshot["btc_balance"])
+        if not self.state_machine.is_safe():
+            self._persist()
             return
             
         self.base_calculator.initialize(current_price)
         base_price = self.base_calculator.base_price
         
-        # We now track average_buy_price as our true break-even
         avg_price = self.state_machine.average_buy_price
-        
-        # Calculate change from base (only for trailing stop reference)
-        change_from_base = price_engine.get_change_from_base(base_price)
-        
-        # Calculate change from average buy price (actual profit)
         profit_margin = 0.0
         if avg_price > 0:
             profit_margin = (current_price - avg_price) / avg_price
             
         current_rsi = self.volatility_engine.current_rsi
+        current_atr = getattr(self.volatility_engine, "current_atr", 0.0) or 0.0
         
         logger.info(f"Precio: {current_price:.2f} | Avg: {avg_price:.2f} | Profit: {profit_margin*100:.2f}% | RSI: {current_rsi:.1f} | Estado: {self.state_machine.state.value}")
         
@@ -55,67 +58,67 @@ class DecisionEngine:
 
         rsi_oversold = getattr(Config, "RSI_OVERSOLD", 30)
         rsi_overbought = getattr(Config, "RSI_OVERBOUGHT", 70)
-
-        # SELL CONDITION:
-        # Must be profitable AND (RSI is overbought OR Trailing Stop triggered from peak)
-        is_profitable_trade = self.fee_calculator.is_profitable(profit_margin) if avg_price > 0 else False
-        drop_from_peak = abs(self.price_engine.get_drop_from_peak())
-        trailing_triggered = drop_from_peak >= Config.TRAILING_STOP_PCT and change_from_base > 0
         
-        if self.state_machine.total_usdt_invested > 0 and is_profitable_trade:
-            if current_rsi >= rsi_overbought or trailing_triggered:
-                self._handle_sell_path(profit_margin)
-            else:
-                # Update peak for trailing stop
-                self.price_engine.reset_peak(base_price if base_price > current_price else current_price)
+        # Stop Loss Calculation (Dynamic ATR)
+        stop_loss_pct = 0.02
+        if current_atr > 0:
+            stop_loss_pct = (current_atr * getattr(Config, "STOP_LOSS_ATR_MULTIPLIER", 1.5)) / current_price
+            
+        # Limite minimo y maximo para Stop Loss
+        stop_loss_pct = max(0.005, min(0.03, stop_loss_pct))
+        
+        # Update peak only if we are profitable
+        if profit_margin > 0:
+            self.price_engine.reset_peak(max(self.price_engine.peak_price, current_price))
         else:
             self.price_engine.reset_peak(current_price)
+            
+        drop_from_peak = abs(self.price_engine.get_drop_from_peak())
+        trailing_triggered = drop_from_peak >= getattr(Config, "TRAILING_STOP_PCT", 0.015) and profit_margin > 0
 
-        # BUY CONDITION:
-        # RSI is oversold AND we haven't completed all buys
-        # We also check if price dropped relative to the local peak to catch the bottom
-        if current_rsi <= rsi_oversold:
-            self._handle_buy_path(abs(change_from_base))
-        elif self.state_machine.state == BotState.EN_BAJADA:
+        # SELL CONDITIONS
+        if self.state_machine.total_usdt_invested > 0:
+            is_profitable = self.fee_calculator.is_profitable(profit_margin) if avg_price > 0 else False
+            stop_loss_triggered = profit_margin <= -stop_loss_pct
+            
+            if stop_loss_triggered:
+                logger.warning(f"STOP LOSS ACTIVADO: Perdida {profit_margin*100:.2f}%% supero limite de {stop_loss_pct*100:.2f}%%")
+                self._handle_sell_path(snapshot, True) # True for full sell
+            elif is_profitable and (current_rsi >= rsi_overbought or trailing_triggered):
+                self._handle_sell_path(snapshot, False) # False for partial/profit split
+                
+        # BUY CONDITIONS
+        if current_rsi <= rsi_oversold and not self.state_machine.buy_level_1_done:
+            self._execute_buy_level(1, snapshot["usdt_balance"], stop_loss_pct)
+        elif current_rsi <= rsi_oversold - 5 and not self.state_machine.buy_level_2_done and self.state_machine.buy_level_1_done:
+            self._execute_buy_level(2, snapshot["usdt_balance"], stop_loss_pct)
+        elif self.state_machine.state == BotState.EN_BAJADA and current_rsi > rsi_oversold:
             self.state_machine.transition(BotState.NEUTRO, "RSI salio de zona de sobreventa")
             
-        self._handle_forced_buy()
         self._persist()
 
-    def _handle_sell_path(self, profit_margin: float) -> None:
-        if self.state_machine.state != BotState.EN_SUBIDA:
-            self.state_machine.transition(BotState.EN_SUBIDA, "Condiciones de venta (RSI/Trailing) cumplidas con profit")
-            
-        snapshot = self.market_client.get_portfolio_snapshot(Config.SYMBOL)
-        if snapshot is None:
-            return
+    def _handle_sell_path(self, snapshot: dict, is_stop_loss: bool) -> None:
+        if self.state_machine.state != BotState.EN_SUBIDA and not is_stop_loss:
+            self.state_machine.transition(BotState.EN_SUBIDA, "Venta en profit o Stop Loss")
             
         usdt_to_recover = self.state_machine.total_usdt_invested
         if usdt_to_recover <= 0:
             return
 
         current_price = self.price_engine.current_price
-        
-        # SPLIT LOGIC 50/50
-        # Calculate gross value of our total BTC position
         total_btc = self.state_machine.total_btc_bought
-        gross_value = total_btc * current_price
         
-        # Net profit in USDT
-        net_profit_usdt = gross_value - usdt_to_recover - (gross_value * Config.BINANCE_FEE_PCT)
+        if is_stop_loss:
+            sell_qty = total_btc
+        else:
+            gross_value = total_btc * current_price
+            net_profit_usdt = gross_value - usdt_to_recover - (gross_value * Config.BINANCE_FEE_PCT)
+            split_pct = getattr(Config, "PROFIT_SPLIT_USDT_PCT", 0.5)
+            target_usdt_to_receive = usdt_to_recover + (max(0, net_profit_usdt) * split_pct)
+            sell_qty = target_usdt_to_receive / current_price
         
-        split_pct = getattr(Config, "PROFIT_SPLIT_USDT_PCT", 0.5)
-        
-        # We want to sell enough BTC to get our initial USDT back + split_pct of the profit
-        target_usdt_to_receive = usdt_to_recover + (net_profit_usdt * split_pct)
-        
-        sell_qty = target_usdt_to_receive / current_price
-        
-        # Exposure limiter handles max limits and decimals
-        sell_qty = self.exposure_limiter.sell_quantity(snapshot["btc_balance"], current_price, target_usdt_to_receive)
-        
+        sell_qty = self.exposure_limiter.sell_quantity(snapshot["btc_balance"], current_price, sell_qty * current_price)
         if sell_qty < Config.MIN_BTC_TO_SELL:
-            logger.info("Cantidad a vender es menor al minimo de exchange. Ignorando.")
             return
             
         validation = self.validator.validate_sell(sell_qty, current_price)
@@ -128,78 +131,56 @@ class DecisionEngine:
             if self.notifier: self.notifier.notify_safe_mode("Fallo una venta")
             return
             
-        self.trade_log.append(execution)
-        if self.notifier: self.notifier.notify_sell(execution)
+        exec_dict = {
+            "side": execution.side, "symbol": execution.symbol, "price": execution.avg_price, 
+            "quantity": execution.executed_qty, "quote_amount": execution.quote_qty, 
+            "fee_paid": execution.fee_qty, "timestamp": execution.timestamp
+        }
+        self.trade_log.append(exec_dict)
+        if self.notifier: self.notifier.notify_sell(exec_dict)
         
-        # Register partial sell (or full if we sold almost everything)
-        self.state_machine.register_sell(btc_sold=execution.get("quantity", sell_qty), full_sell=False)
-        self.state_machine.register_usdt_received()
+        self.state_machine.register_sell(btc_sold=execution.executed_qty, full_sell=is_stop_loss)
+        if not is_stop_loss:
+            self.state_machine.register_usdt_received()
         
-        # Reset base price for next cycles
-        self.base_calculator.update(execution["price"], "post_sell")
-        self.price_engine.reset_peak(execution["price"])
+        self.base_calculator.update(execution.avg_price, "post_sell")
+        self.price_engine.reset_peak(execution.avg_price)
 
-    def _handle_buy_path(self, drop_ratio: float) -> None:
+    def _execute_buy_level(self, level: int, usdt_balance: float, stop_loss_pct: float) -> None:
         if self.state_machine.state != BotState.EN_BAJADA:
             self.state_machine.transition(BotState.EN_BAJADA, "RSI en sobreventa")
-        snapshot = self.market_client.get_portfolio_snapshot(Config.SYMBOL)
-        if snapshot is None:
-            return
             
-        # Instead of strict drop ratio, we use RSI. But we keep levels for scaling in.
-        if not self.state_machine.buy_level_1_done:
-            self._execute_buy_level(1, Config.BUY_LEVEL_1_USDT_PCT, snapshot["usdt_balance"])
-            return
+        # Position Sizing
+        risk_pct = getattr(Config, "RISK_PER_TRADE_PCT", 0.015)
+        max_loss_usdt = usdt_balance * risk_pct
+        target_quote = max_loss_usdt / stop_loss_pct if stop_loss_pct > 0 else 0
+        
+        # Max exposure limit logic
+        max_allowed_quote = usdt_balance * (Config.BUY_LEVEL_1_USDT_PCT if level == 1 else Config.BUY_LEVEL_2_USDT_PCT)
+        if target_quote == 0 or target_quote > max_allowed_quote:
+            target_quote = max_allowed_quote
             
-        if not self.state_machine.buy_level_2_done and self.volatility_engine.current_rsi < getattr(Config, "RSI_OVERSOLD", 30) - 5:
-            # Only buy level 2 if RSI drops even lower
-            self._execute_buy_level(2, Config.BUY_LEVEL_2_USDT_PCT, snapshot["usdt_balance"])
-
-    def _execute_buy_level(self, level: int, fraction: float, usdt_balance: float) -> None:
-        validation = self.validator.validate_buy(usdt_balance * fraction)
+        validation = self.validator.validate_buy(target_quote)
         if not validation["ok"]:
             return
+            
         execution = self.order_manager.market_buy(validation["quote_amount"])
         if execution is None:
             self.state_machine.enter_safe_mode(f"Fallo compra nivel {level}")
             if self.notifier: self.notifier.notify_safe_mode(f"Fallo compra nivel {level}")
             return
-        self.trade_log.append(execution)
-        if self.notifier: self.notifier.notify_buy(execution, level)
+            
+        exec_dict = {
+            "side": execution.side, "symbol": execution.symbol, "price": execution.avg_price, 
+            "quantity": execution.executed_qty, "quote_amount": execution.quote_qty, 
+            "fee_paid": execution.fee_qty, "timestamp": execution.timestamp
+        }
+        self.trade_log.append(exec_dict)
+        if self.notifier: self.notifier.notify_buy(exec_dict, level)
         
-        usdt_spent = execution.get("quote_amount", validation["quote_amount"])
-        btc_bought = execution.get("quantity", 0.0)
-        price = execution.get("price", self.price_engine.current_price)
-        
-        self.state_machine.register_buy(level, usdt_spent, btc_bought, price)
+        self.state_machine.register_buy(level, execution.quote_qty, execution.executed_qty, execution.avg_price)
         self.state_machine.register_usdt_spent()
-        self.price_engine.reset_peak(execution["price"])
-
-    def _handle_forced_buy(self) -> None:
-        plan = self.bull_protection.force_buy_plan(self.state_machine)
-        if plan is None:
-            return
-        snapshot = self.market_client.get_portfolio_snapshot(Config.SYMBOL)
-        if snapshot is None:
-            return
-        validation = self.validator.validate_buy(snapshot["usdt_balance"] * plan["fraction"])
-        if not validation["ok"]:
-            return
-        execution = self.order_manager.market_buy(validation["quote_amount"])
-        if execution is None:
-            self.state_machine.enter_safe_mode("Fallo compra forzada")
-            if self.notifier: self.notifier.notify_safe_mode("Fallo compra forzada")
-            return
-        execution["reason"] = plan["reason"]
-        self.trade_log.append(execution)
-        if self.notifier: self.notifier.notify_buy(execution, 2)
-        
-        usdt_spent = execution.get("quote_amount", validation["quote_amount"])
-        btc_bought = execution.get("quantity", 0.0)
-        price = execution.get("price", self.price_engine.current_price)
-        
-        self.state_machine.register_buy(2, usdt_spent, btc_bought, price)
-        self.state_machine.register_usdt_spent()
+        self.price_engine.reset_peak(execution.avg_price)
 
     def _persist(self) -> None:
         self.state_store.save({"base": self.base_calculator.to_dict(), "state_machine": self.state_machine.to_dict(), "last_price": self.price_engine.current_price, "peak_price": self.price_engine.peak_price})

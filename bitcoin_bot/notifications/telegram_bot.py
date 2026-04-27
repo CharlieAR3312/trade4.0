@@ -160,6 +160,11 @@ class TelegramNotifier:
 
     async def _handle_callbacks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
+        
+        if query.from_user.id != self.authorized_user_id:
+            await query.answer("No tienes permiso para ejecutar esta accion.", show_alert=True)
+            return
+            
         await query.answer()
         if query.data == "confirm_stop":
             await query.edit_message_text("🛑 *Bot apagado. Hasta pronto.*", parse_mode=ParseMode.MARKDOWN)

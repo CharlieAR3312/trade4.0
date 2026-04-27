@@ -1,7 +1,10 @@
 from __future__ import annotations
 import logging
 import time
+import random
+import uuid
 from bitcoin_bot.config import Config
+from bitcoin_bot.core.models import OrderExecution
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +33,10 @@ class PaperBinanceClient:
     def get_symbol_info(self, symbol: str) -> dict:
         return self.symbol_info
 
-    def create_market_buy(self, symbol: str, quote_amount: float) -> dict:
+    def get_order_status(self, symbol: str, client_order_id: str) -> OrderExecution | None:
+        return None
+
+    def create_market_buy(self, symbol: str, quote_amount: float, client_order_id: str = "") -> OrderExecution:
         if quote_amount > self.balances["USDT"]:
             raise RuntimeError("USDT insuficiente en paper trading")
         fee_paid = quote_amount * Config.BINANCE_FEE_PCT
@@ -38,9 +44,21 @@ class PaperBinanceClient:
         self.balances["USDT"] -= quote_amount
         self.balances["BTC"] += quantity
         logger.info("Paper BUY %.2f USDT -> %.8f BTC", quote_amount, quantity)
-        return {"side": "BUY", "symbol": symbol, "price": self.current_price, "quantity": quantity, "quote_amount": quote_amount, "fee_paid": fee_paid, "mode": "paper", "timestamp": time.time()}
+        return OrderExecution(
+            order_id=str(uuid.uuid4()),
+            client_order_id=client_order_id,
+            side="BUY",
+            symbol=symbol,
+            status="FILLED",
+            executed_qty=quantity,
+            quote_qty=quote_amount,
+            avg_price=self.current_price,
+            fee_qty=fee_paid,
+            fee_asset="USDT",
+            timestamp=time.time()
+        )
 
-    def create_market_sell(self, symbol: str, quantity: float) -> dict:
+    def create_market_sell(self, symbol: str, quantity: float, client_order_id: str = "") -> OrderExecution:
         if quantity > self.balances["BTC"]:
             raise RuntimeError("BTC insuficiente en paper trading")
         gross_quote = quantity * self.current_price
@@ -49,12 +67,21 @@ class PaperBinanceClient:
         self.balances["BTC"] -= quantity
         self.balances["USDT"] += net_quote
         logger.info("Paper SELL %.8f BTC -> %.2f USDT", quantity, net_quote)
-        return {"side": "SELL", "symbol": symbol, "price": self.current_price, "quantity": quantity, "quote_amount": net_quote, "fee_paid": fee_paid, "mode": "paper", "timestamp": time.time()}
+        return OrderExecution(
+            order_id=str(uuid.uuid4()),
+            client_order_id=client_order_id,
+            side="SELL",
+            symbol=symbol,
+            status="FILLED",
+            executed_qty=quantity,
+            quote_qty=net_quote,
+            avg_price=self.current_price,
+            fee_qty=fee_paid,
+            fee_asset="USDT",
+            timestamp=time.time()
+        )
 
     def get_klines(self, symbol: str, interval: str, limit: int = 14) -> list:
-        # Mocking klines with the current price varying slightly
-        # [Open time, Open, High, Low, Close, ...]
-        import random
         klines = []
         now = int(time.time() * 1000)
         base_price = self.current_price
@@ -64,8 +91,8 @@ class PaperBinanceClient:
             high_p = max(open_p, close_p) * (1 + random.uniform(0, 0.01))
             low_p = min(open_p, close_p) * (1 - random.uniform(0, 0.01))
             kline = [
-                now - (limit - i) * 3600000,  # Open time
-                str(open_p), str(high_p), str(low_p), str(close_p), "0"  # Volume
+                now - (limit - i) * 3600000,
+                str(open_p), str(high_p), str(low_p), str(close_p), "0"
             ]
             klines.append(kline)
             base_price = close_p
