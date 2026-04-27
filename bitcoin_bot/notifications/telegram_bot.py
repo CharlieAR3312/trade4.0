@@ -17,14 +17,17 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramNotifier:
-    def __init__(self, token: str, chat_id: str, price_engine=None, state_machine=None, base_calculator=None, market_client=None, stop_callback: Optional[Callable] = None):
+    def __init__(self, token: str, chat_id: str, price_engine=None, state_machine=None, base_calculator=None, market_client=None, stop_callback: Optional[Callable] = None, engine_state=None, pnl_tracker=None):
         self.token = token
         self.chat_id = int(chat_id)
+        self.authorized_user_id = Config.TELEGRAM_AUTHORIZED_USER_ID or self.chat_id
         self.price_engine = price_engine
         self.state_machine = state_machine
         self.base_calculator = base_calculator
         self.market_client = market_client
         self.stop_callback = stop_callback
+        self.engine_state = engine_state
+        self.pnl_tracker = pnl_tracker
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._app: Optional[Application] = None
@@ -40,12 +43,15 @@ class TelegramNotifier:
 
     async def _init_app(self) -> None:
         self._app = Application.builder().token(self.token).build()
-        user_filter = filters.Chat(chat_id=self.chat_id)
+        user_filter = filters.User(user_id=self.authorized_user_id)
+        
         self._app.add_handler(CommandHandler("start", self._cmd_start, filters=user_filter))
         self._app.add_handler(CommandHandler("status", self._cmd_status, filters=user_filter))
         self._app.add_handler(CommandHandler("logs", self._cmd_logs, filters=user_filter))
         self._app.add_handler(CommandHandler("help", self._cmd_help, filters=user_filter))
-        self._app.add_handler(MessageHandler(user_filter & filters.Text(["📊 Status", "⚙️ Config", "🛑 STOP"]), self._handle_main_buttons))
+        self._app.add_handler(CommandHandler("pnl", self._cmd_pnl, filters=user_filter))
+        
+        self._app.add_handler(MessageHandler(user_filter & filters.Text(["📊 Status", "📈 PnL", "⏸️ Pause", "▶️ Resume", "🛑 STOP"]), self._handle_main_buttons))
         self._app.add_handler(CallbackQueryHandler(self._handle_callbacks))
         await self._app.initialize()
         await self._app.start()
@@ -72,34 +78,77 @@ class TelegramNotifier:
 
     def _get_data(self) -> Dict[str, Any]:
         price = self.price_engine.current_price if self.price_engine else 0
-        base = self.base_calculator.base_price if self.base_calculator else 0
-        diff = (price - base) if (price and base) else 0
-        change = (diff / base * 100) if base else 0
+        
+        # Obtenemos RSI del volatility engine si esta disponible
+        rsi = 50.0
+        from bitcoin_bot.core.decision_engine import DecisionEngine
+        # La referencia al engine o al volatility no esta directa aquí,
+        # pero recibimos price_engine, state_machine, base_calculator.
+        # Mejor modificar _get_data para sacar el avg_buy_price
+        
+        avg_price = self.state_machine.average_buy_price if self.state_machine else 0
+        
+        diff = (price - avg_price) if (price and avg_price) else 0
+        change = (diff / avg_price * 100) if avg_price else 0
+        
         snap = self.market_client.get_portfolio_snapshot(Config.SYMBOL) if self.market_client else {}
-        return {"state": self.state_machine.state.value if self.state_machine else "DESCONOCIDO", "price": price or 0, "base": base or 0, "change": change, "trend_emoji": "📈" if diff >= 0 else "📉", "btc": snap.get("btc_balance", 0), "usdt": snap.get("usdt_balance", 0), "total": snap.get("total_usdt", 0), "mode": Config.TRADING_MODE}
+        engine_status = self.engine_state.status.value if self.engine_state else "UNKNOWN"
+        
+        # RSI might be hard to get if we don't have reference to volatility engine.
+        # Wait, the notifier receives the engines in main.py? Let's check init.
+        # It doesn't receive volatility_engine. I will try to fetch it if passed, or just ignore for now.
+        return {
+            "state": self.state_machine.state.value if self.state_machine else "DESCONOCIDO", 
+            "engine": engine_status, 
+            "price": price or 0, 
+            "avg_price": avg_price or 0, 
+            "change": change, 
+            "trend_emoji": "📈" if diff >= 0 else "📉", 
+            "btc": snap.get("btc_balance", 0), 
+            "usdt": snap.get("usdt_balance", 0), 
+            "total": snap.get("total_usdt", 0), 
+            "mode": Config.TRADING_MODE
+        }
 
     def _build_status_msg(self, data: Dict[str, Any], title: str = "📊 *STATUS*") -> str:
+        avg_str = f"${data['avg_price']:,.2f}" if data['avg_price'] > 0 else "N/A"
+        change_str = f"{data['change']:+.2f}%" if data['avg_price'] > 0 else "0.00%"
+        
         return (f"{title} | `{datetime.now().strftime('%H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━━━━\n"
+            f"🚀 Motor: `{data['engine']}`\n"
             f"🤖 Modo: `{data['mode']}`\n"
             f"🔄 Estado: `{data['state']}`\n\n"
             f"💰 Precio: `${data['price']:,.2f}`\n"
-            f"{data['trend_emoji']} Delta: `{data['change']:+.2f}%` vs Base\n"
+            f"⚖️ Costo Promedio (Break Even): `{avg_str}`\n"
+            f"{data['trend_emoji']} Profit Real: `{change_str}`\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"₿  BTC:  `{data['btc']:.8f}`\n"
             f"💵 USDT: `{data['usdt']:.2f}`\n"
             f"🏦 TOTAL: `${data['total']:,.2f}`")
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        keyboard = [["📊 Status", "⚙️ Config"], ["🛑 STOP"]]
+        keyboard = [["📊 Status", "📈 PnL"], ["⏸️ Pause", "▶️ Resume"], ["🛑 STOP"]]
         markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("🎮 *Panel de Control* activo.\nElige una opción:", reply_markup=markup, parse_mode=ParseMode.MARKDOWN)
 
     async def _handle_main_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
         if "Status" in text: await self._cmd_status(update, context)
-        elif "Config" in text: await self._menu_config(update)
+        elif "PnL" in text: await self._cmd_pnl(update, context)
+        elif "Pause" in text: await self._cmd_pause(update)
+        elif "Resume" in text: await self._cmd_resume(update)
         elif "STOP" in text: await self._menu_stop_confirm(update)
+
+    async def _cmd_pause(self, update: Update):
+        if self.engine_state:
+            self.engine_state.pause()
+            await update.message.reply_text("⏸️ *Motor Pausado.* El bot no operará.", parse_mode=ParseMode.MARKDOWN)
+
+    async def _cmd_resume(self, update: Update):
+        if self.engine_state:
+            self.engine_state.resume()
+            await update.message.reply_text("▶️ *Motor Reanudado.* Bot operando normalmente.", parse_mode=ParseMode.MARKDOWN)
 
     async def _menu_config(self, update: Update):
         keyboard = [[InlineKeyboardButton("🛡️ Modo Seguro", callback_data="set_mode_safe"), InlineKeyboardButton("🚀 Modo Normal", callback_data="set_mode_normal")]]
@@ -129,6 +178,16 @@ class TelegramNotifier:
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = self._get_data()
         await update.message.reply_text(self._build_status_msg(data), parse_mode=ParseMode.MARKDOWN)
+
+    async def _cmd_pnl(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self.pnl_tracker:
+            await update.message.reply_text("❌ PnL Tracker no está configurado.")
+            return
+        
+        metrics = self.pnl_tracker.calculate_metrics()
+        current_price = self.price_engine.current_price if self.price_engine else 0
+        report = self.pnl_tracker.format_telegram_report(metrics, current_price)
+        await update.message.reply_text(report, parse_mode=ParseMode.MARKDOWN)
 
     async def _cmd_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:

@@ -3,14 +3,12 @@ import json
 from pathlib import Path
 
 class StateStore:
-    def __init__(self, filepath: str):
-        self.filepath = Path(filepath)
-        self.filepath.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, db_manager):
+        self.db_manager = db_manager
 
     def load(self) -> dict:
-        if not self.filepath.exists():
-            return {}
-        return json.loads(self.filepath.read_text(encoding="utf-8"))
+        state = self.db_manager.get_state("main_bot_state")
+        return state if state else {}
 
     def save(self, payload: dict) -> None:
-        self.filepath.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.db_manager.set_state("main_bot_state", payload)

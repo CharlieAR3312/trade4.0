@@ -73,3 +73,13 @@ class BinanceClient:
 
     def create_market_sell(self, symbol: str, quantity: float) -> dict:
         return self.client.order_market_sell(symbol=symbol, quantity=quantity)
+
+    def get_klines(self, symbol: str, interval: str, limit: int = 14) -> list:
+        try:
+            # klines are returned as list of lists:
+            # [ [Open time, Open, High, Low, Close, Volume, Close time, Quote asset volume, Number of trades, Taker buy base asset volume, Taker buy quote asset volume, Ignore] ]
+            klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+            return klines
+        except Exception as exc:
+            logger.error("Error obteniendo klines: %s", exc)
+            return []

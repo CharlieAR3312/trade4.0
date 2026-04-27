@@ -7,7 +7,13 @@ from bitcoin_bot.config import Config
 from bitcoin_bot.core.base_calculator import BaseCalculator
 from bitcoin_bot.core.decision_engine import DecisionEngine
 from bitcoin_bot.core.price_engine import PriceEngine
+import os
+from bitcoin_bot.core.engine_state import GlobalEngineState
+from bitcoin_bot.core.pnl_tracker import PnLTracker
+from bitcoin_bot.storage.database import DBManager
+from bitcoin_bot.notifications.telegram_bot import TelegramNotifier
 from bitcoin_bot.core.state_machine import StateMachine
+from bitcoin_bot.core.volatility_engine import VolatilityEngine
 from bitcoin_bot.exchange.binance_client import BinanceClient
 from bitcoin_bot.exchange.order_manager import OrderManager
 from bitcoin_bot.exchange.validator import Validator
@@ -32,26 +38,53 @@ def build_market_client():
     return PaperBinanceClient()
 
 def build_engine(market_client):
-    state_store = StateStore(Config.STATE_FILE)
+    db_manager = DBManager(Config.DB_FILE)
+    engine_state = GlobalEngineState()
+    pnl_tracker = PnLTracker(db_manager)
+
+    state_store = StateStore(db_manager)
     persisted = state_store.load()
     state_machine = StateMachine.from_dict(persisted.get("state_machine"))
     base_calculator = BaseCalculator.from_dict(persisted.get("base"))
-    price_engine = PriceEngine(market_client)
+    price_engine = PriceEngine(market_client, engine_state)
     price_engine.peak_price = persisted.get("peak_price")
+    
+    volatility_engine = VolatilityEngine(market_client)
+    
+    # Inicializar Telegram Notifier
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    notifier = None
+    if token and chat_id:
+        notifier = TelegramNotifier(
+            token=token,
+            chat_id=chat_id,
+            price_engine=price_engine,
+            state_machine=state_machine,
+            base_calculator=base_calculator,
+            market_client=market_client,
+            stop_callback=engine_state.stop,
+            engine_state=engine_state,
+            pnl_tracker=pnl_tracker
+        )
+        notifier.start()
+    
     engine = DecisionEngine(
         market_client=market_client,
         price_engine=price_engine,
         state_machine=state_machine,
         base_calculator=base_calculator,
+        volatility_engine=volatility_engine,
         order_manager=OrderManager(market_client),
         validator=Validator(market_client),
         fee_calculator=FeeCalculator(),
         exposure_limiter=ExposureLimiter(),
         bull_protection=BullProtection(),
-        trade_log=TradeLog(Config.TRADE_LOG_FILE),
+        trade_log=TradeLog(db_manager),
         state_store=state_store,
+        notifier=notifier
     )
-    return price_engine, engine
+    return price_engine, engine, engine_state
 
 def run_paper_demo(price_engine, engine, market_client, steps: int) -> None:
     for _ in range(steps):
@@ -69,7 +102,7 @@ def main() -> None:
     args = parser.parse_args()
     setup_logging()
     market_client = build_market_client()
-    price_engine, engine = build_engine(market_client)
+    price_engine, engine, engine_state = build_engine(market_client)
     if args.demo:
         run_paper_demo(price_engine, engine, market_client, args.steps)
     else:

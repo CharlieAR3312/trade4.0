@@ -50,3 +50,23 @@ class PaperBinanceClient:
         self.balances["USDT"] += net_quote
         logger.info("Paper SELL %.8f BTC -> %.2f USDT", quantity, net_quote)
         return {"side": "SELL", "symbol": symbol, "price": self.current_price, "quantity": quantity, "quote_amount": net_quote, "fee_paid": fee_paid, "mode": "paper", "timestamp": time.time()}
+
+    def get_klines(self, symbol: str, interval: str, limit: int = 14) -> list:
+        # Mocking klines with the current price varying slightly
+        # [Open time, Open, High, Low, Close, ...]
+        import random
+        klines = []
+        now = int(time.time() * 1000)
+        base_price = self.current_price
+        for i in range(limit):
+            open_p = base_price * (1 + random.uniform(-0.01, 0.01))
+            close_p = open_p * (1 + random.uniform(-0.02, 0.02))
+            high_p = max(open_p, close_p) * (1 + random.uniform(0, 0.01))
+            low_p = min(open_p, close_p) * (1 - random.uniform(0, 0.01))
+            kline = [
+                now - (limit - i) * 3600000,  # Open time
+                str(open_p), str(high_p), str(low_p), str(close_p), "0"  # Volume
+            ]
+            klines.append(kline)
+            base_price = close_p
+        return klines

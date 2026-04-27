@@ -7,8 +7,9 @@ from bitcoin_bot.config import Config
 logger = logging.getLogger(__name__)
 
 class PriceEngine:
-    def __init__(self, market_client):
+    def __init__(self, market_client, engine_state=None):
         self.client = market_client
+        self.engine_state = engine_state
         self.current_price = None
         self.peak_price = None
         self.last_updated = None
@@ -59,6 +60,14 @@ class PriceEngine:
     def run_loop(self, callback) -> None:
         logger.info("Motor de precios iniciado con intervalo de %ss", Config.PRICE_INTERVAL_SECONDS)
         while True:
+            if self.engine_state:
+                if self.engine_state.is_stopped():
+                    logger.info("Motor global detenido. Saliendo del loop...")
+                    break
+                if self.engine_state.is_paused():
+                    time.sleep(2)  # Check in a short interval while paused
+                    continue
+
             try:
                 self.fetch_price()
                 if self.current_price is not None:

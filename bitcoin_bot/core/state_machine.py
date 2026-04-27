@@ -23,6 +23,9 @@ class StateSnapshot:
     buy_level_1_done: bool = False
     buy_level_2_done: bool = False
     usdt_idle_since: float | None = None
+    total_usdt_invested: float = 0.0
+    average_buy_price: float = 0.0
+    total_btc_bought: float = 0.0
 
 class StateMachine:
     def __init__(self):
@@ -32,6 +35,9 @@ class StateMachine:
         self.buy_level_1_done = False
         self.buy_level_2_done = False
         self.usdt_idle_since = None
+        self.total_usdt_invested = 0.0
+        self.average_buy_price = 0.0
+        self.total_btc_bought = 0.0
         self.history: list[dict] = []
 
     def transition(self, new_state: BotState, reason: str = "") -> None:
@@ -49,16 +55,38 @@ class StateMachine:
         self.last_operation_ts = time.time()
         self.transition(BotState.ENFRIANDO, f"Operacion: {operation_type}")
 
-    def register_sell(self) -> None:
-        self.buy_level_1_done = False
-        self.buy_level_2_done = False
+    def register_sell(self, btc_sold: float = 0.0, full_sell: bool = True) -> None:
+        if full_sell or btc_sold >= self.total_btc_bought * 0.99:
+            self.buy_level_1_done = False
+            self.buy_level_2_done = False
+            self.total_usdt_invested = 0.0
+            self.average_buy_price = 0.0
+            self.total_btc_bought = 0.0
+        else:
+            # Partial sell, reduce the invested usdt and btc proportionally, keep the same average price
+            fraction_sold = btc_sold / self.total_btc_bought if self.total_btc_bought > 0 else 0
+            self.total_usdt_invested -= self.total_usdt_invested * fraction_sold
+            self.total_btc_bought -= btc_sold
+            if self.total_usdt_invested <= 0:
+                self.buy_level_1_done = False
+                self.buy_level_2_done = False
+
         self.register_operation("VENTA")
 
-    def register_buy(self, level: int) -> None:
+    def register_buy(self, level: int, usdt_amount: float = 0.0, btc_amount: float = 0.0, price: float = 0.0) -> None:
         if level == 1:
             self.buy_level_1_done = True
         elif level == 2:
             self.buy_level_2_done = True
+        
+        # Calculate new average buy price
+        if btc_amount > 0 and price > 0:
+            new_total_btc = self.total_btc_bought + btc_amount
+            new_total_cost = (self.total_btc_bought * self.average_buy_price) + (btc_amount * price)
+            self.average_buy_price = new_total_cost / new_total_btc
+            self.total_btc_bought = new_total_btc
+            
+        self.total_usdt_invested += usdt_amount
         self.register_operation(f"COMPRA_NIVEL_{level}")
 
     def register_usdt_received(self) -> None:
@@ -89,7 +117,17 @@ class StateMachine:
         logger.critical("Modo seguro: %s", reason)
 
     def to_dict(self) -> dict:
-        payload = asdict(StateSnapshot(state=self.state.value, state_since=self.state_since, last_operation_ts=self.last_operation_ts, buy_level_1_done=self.buy_level_1_done, buy_level_2_done=self.buy_level_2_done, usdt_idle_since=self.usdt_idle_since))
+        payload = asdict(StateSnapshot(
+            state=self.state.value, 
+            state_since=self.state_since, 
+            last_operation_ts=self.last_operation_ts, 
+            buy_level_1_done=self.buy_level_1_done, 
+            buy_level_2_done=self.buy_level_2_done, 
+            usdt_idle_since=self.usdt_idle_since, 
+            total_usdt_invested=self.total_usdt_invested,
+            average_buy_price=self.average_buy_price,
+            total_btc_bought=self.total_btc_bought
+        ))
         payload["history"] = self.history
         return payload
 
@@ -104,5 +142,8 @@ class StateMachine:
         machine.buy_level_1_done = bool(payload.get("buy_level_1_done"))
         machine.buy_level_2_done = bool(payload.get("buy_level_2_done"))
         machine.usdt_idle_since = payload.get("usdt_idle_since")
+        machine.total_usdt_invested = float(payload.get("total_usdt_invested", 0.0))
+        machine.average_buy_price = float(payload.get("average_buy_price", 0.0))
+        machine.total_btc_bought = float(payload.get("total_btc_bought", 0.0))
         machine.history = list(payload.get("history", []))
         return machine
