@@ -30,7 +30,7 @@ class PnLTracker:
             side = str(t.get('side', '')).upper()
             qty = Decimal(str(t.get('quantity', 0.0)))
             quote = Decimal(str(t.get('quote_amount', 0.0)))
-            fee = Decimal(str(t.get('fee_paid', 0.0)))
+            fee = Decimal(str(t.get('fee_in_usdt', t.get('fee_paid', 0.0))))
 
             total_fees_usdt += fee
 

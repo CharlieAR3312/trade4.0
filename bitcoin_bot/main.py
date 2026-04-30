@@ -109,7 +109,7 @@ def run_paper_demo(price_engine, engine, market_client, steps: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bot acumulador BTC/USDT - Remediation Audit Edition")
-    parser.add_argument("--demo", action="store_true", help="Simulacion 100% offline sin red")
+    parser.add_argument("--demo", action="store_true", help="Simulacion 100%% offline sin red")
     parser.add_argument("--steps", type=int, default=40, help="Ticks a usar en demo")
     args = parser.parse_args()
     

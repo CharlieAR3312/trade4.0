@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional, Callable, Any, Dict
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.constants import ParseMode
@@ -14,6 +15,12 @@ from telegram.ext import (
 from bitcoin_bot.config import Config
 
 logger = logging.getLogger(__name__)
+
+def _dec(value, default="0") -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal(default)
 
 
 class TelegramNotifier:
@@ -210,6 +217,20 @@ class TelegramNotifier:
 
     def notify_sell(self, execution: dict) -> None:
         self.send(f"🔴 *VENTA REALIZADA*\n━━━━━━━━━━━━━━━━━━\n₿  BTC: `{execution.get('quantity', 0):.8f}`\n💵 Recibido: `{execution.get('quote_amount', 0):.2f} USDT`\n📉 Precio: `${execution.get('price', 0):,.2f}`\n💸 Fee: `{execution.get('fee_paid', 0):.4f} USDT`")
+
+    def notify_buy(self, execution: dict, level: int) -> None:
+        quote = _dec(execution.get("quote_amount", 0))
+        qty = _dec(execution.get("quantity", 0))
+        price = _dec(execution.get("price", 0))
+        fee = _dec(execution.get("fee_in_usdt", execution.get("fee_paid", 0)))
+        self.send(f"ðŸŸ¢ *COMPRA REALIZADA*\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ“ Nivel: `{level}`\nðŸ’° USDT: `{quote:.2f}`\nâ‚¿  BTC: `{qty:.8f}`\nðŸ“ˆ Precio: `${price:,.2f}`\nðŸ’¸ Fee: `{fee:.4f} USDT`")
+
+    def notify_sell(self, execution: dict) -> None:
+        quote = _dec(execution.get("quote_amount", 0))
+        qty = _dec(execution.get("quantity", 0))
+        price = _dec(execution.get("price", 0))
+        fee = _dec(execution.get("fee_in_usdt", execution.get("fee_paid", 0)))
+        self.send(f"ðŸ”´ *VENTA REALIZADA*\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nâ‚¿  BTC: `{qty:.8f}`\nðŸ’µ Recibido: `{quote:.2f} USDT`\nðŸ“‰ Precio: `${price:,.2f}`\nðŸ’¸ Fee: `{fee:.4f} USDT`")
 
     def notify_safe_mode(self, reason: str) -> None:
         self.send(f"🚨 *MODO SEGURO ACTIVADO*\n━━━━━━━━━━━━━━━━━━\n⚠️ Razón: `{reason}`")

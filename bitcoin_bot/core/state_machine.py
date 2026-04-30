@@ -63,6 +63,33 @@ class StateMachine:
         self.last_operation_ts = time.time()
         self.transition(BotState.ENFRIANDO, f"Operacion: {operation_type}")
 
+    def is_cooling_down(self) -> bool:
+        if self.state != BotState.ENFRIANDO or self.last_operation_ts is None:
+            return False
+        elapsed_minutes = (time.time() - self.last_operation_ts) / 60
+        if elapsed_minutes >= Config.COOLDOWN_MINUTES:
+            self.transition(BotState.NEUTRO, "Cooldown completado")
+            return False
+        return True
+
+    def is_safe(self) -> bool:
+        return self.state != BotState.MODO_SEGURO
+
+    def enter_safe_mode(self, reason: str) -> None:
+        self.transition(BotState.MODO_SEGURO, reason)
+        logger.critical("Modo seguro: %s", reason)
+
+    def register_usdt_received(self) -> None:
+        self.usdt_idle_since = time.time()
+
+    def register_usdt_spent(self) -> None:
+        self.usdt_idle_since = None
+
+    def usdt_idle_days(self) -> float:
+        if self.usdt_idle_since is None:
+            return 0.0
+        return (time.time() - self.usdt_idle_since) / 86400
+
     def register_sell(self, btc_sold: Decimal, quote_received: Decimal, full_sell: bool = True) -> None:
         btc_sold = Decimal(str(btc_sold))
         quote_received = Decimal(str(quote_received))

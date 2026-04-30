@@ -2,6 +2,17 @@ import pytest
 from decimal import Decimal
 from bitcoin_bot.core.state_machine import StateMachine, BotState
 from bitcoin_bot.core.models import OrderExecution
+from bitcoin_bot.core.decision_engine import DecisionEngine
+from bitcoin_bot.core.base_calculator import BaseCalculator
+from bitcoin_bot.core.price_engine import PriceEngine
+from bitcoin_bot.exchange.order_manager import OrderManager
+from bitcoin_bot.exchange.validator import Validator
+from bitcoin_bot.risk.fee_calculator import FeeCalculator
+from bitcoin_bot.risk.exposure_limiter import ExposureLimiter
+from bitcoin_bot.risk.bull_protection import BullProtection
+from bitcoin_bot.config import Config
+from bitcoin_bot.exchange.binance_client import BinanceClient
+import time
 
 def test_state_machine_accounting_profit_split():
     """Valida que el BTC de ganancia pase al cubo de acumulados y el costo activo se resetee."""
@@ -55,3 +66,164 @@ def test_reconciliation_delta():
     # Si de repente hay 1.05 BTC (alguien vendio 0.05 BTC del bot), deberia entrar en Modo Seguro.
     sm.check_reconciliation(real_btc_balance=Decimal("1.05"))
     assert sm.state == BotState.MODO_SEGURO
+
+def test_state_machine_runtime_methods_exist_and_work():
+    sm = StateMachine()
+    assert sm.is_safe()
+    sm.enter_safe_mode("test")
+    assert sm.state == BotState.MODO_SEGURO
+    assert not sm.is_safe()
+
+def test_parse_buy_fee_in_btc_uses_net_btc_and_values_fee():
+    class FakeClient:
+        def get_my_trades(self, symbol, orderId):
+            return [{
+                "price": "65000.00",
+                "qty": "0.01000000",
+                "commission": "0.00001000",
+                "commissionAsset": "BTC",
+            }]
+
+    parser = BinanceClient.__new__(BinanceClient)
+    parser.client = FakeClient()
+    response = {
+        "symbol": "BTCUSDT",
+        "orderId": 1,
+        "clientOrderId": "abc",
+        "side": "BUY",
+        "status": "FILLED",
+        "executedQty": "0.01000000",
+        "cummulativeQuoteQty": "650.00000000",
+        "time": 1710000000000,
+    }
+
+    order = parser._parse_order_response(response)
+    assert order.executed_qty == Decimal("0.00999000")
+    assert order.quote_qty == Decimal("650.00000000")
+    assert order.fee_asset == "BTC"
+    assert order.fee_in_usdt == Decimal("0.6500000000")
+
+def test_parse_bnb_fee_fetches_real_valuation_not_hardcoded():
+    class FakeClient:
+        def get_symbol_ticker(self, symbol):
+            assert symbol == "BNBUSDT"
+            return {"price": "700.00"}
+
+    parser = BinanceClient.__new__(BinanceClient)
+    parser.client = FakeClient()
+    response = {
+        "symbol": "BTCUSDT",
+        "orderId": 2,
+        "clientOrderId": "bnb",
+        "side": "BUY",
+        "status": "FILLED",
+        "executedQty": "0.01000000",
+        "cummulativeQuoteQty": "650.00000000",
+        "fills": [{
+            "price": "65000.00",
+            "qty": "0.01000000",
+            "commission": "0.001",
+            "commissionAsset": "BNB",
+        }],
+        "time": 1710000000000,
+    }
+
+    order = parser._parse_order_response(response)
+    assert order.fee_in_usdt == Decimal("0.70000")
+    assert order.quote_qty == Decimal("650.70000000")
+
+def test_stop_loss_is_not_blocked_by_cooldown():
+    class FakeMarket:
+        def __init__(self):
+            self.price = Decimal("97000")
+            self.sold = Decimal("0")
+
+        def get_price(self, symbol):
+            return self.price
+
+        def get_portfolio_snapshot(self, symbol):
+            return {
+                "btc_balance": Decimal("0.01"),
+                "usdt_balance": Decimal("1000"),
+                "btc_price": self.price,
+                "btc_value_usdt": Decimal("970"),
+                "total_usdt": Decimal("1970"),
+                "timestamp": time.time(),
+            }
+
+        def get_symbol_info(self, symbol):
+            return {
+                "min_qty": Decimal("0.00001"),
+                "step_size": Decimal("0.00001"),
+                "min_notional": Decimal("1.50"),
+            }
+
+        def get_klines(self, symbol, interval, limit):
+            return []
+
+        def get_order_status(self, symbol, client_order_id):
+            return None
+
+        def create_market_sell(self, symbol, quantity, client_order_id=""):
+            self.sold += Decimal(str(quantity))
+            return OrderExecution(
+                order_id="sell-1",
+                client_order_id=client_order_id,
+                side="SELL",
+                symbol=symbol,
+                status="FILLED",
+                executed_qty=quantity,
+                quote_qty=Decimal(str(quantity)) * self.price,
+                avg_price=self.price,
+                fee_qty="0",
+                fee_asset="USDT",
+                fee_in_usdt="0",
+            )
+
+        def create_market_buy(self, symbol, quote_amount, client_order_id=""):
+            raise AssertionError("stop-loss test should not buy")
+
+    class FakeVol:
+        current_rsi = Decimal("50")
+        current_atr = Decimal("0")
+        def update(self):
+            return None
+
+    class DummyLog:
+        def append(self, trade):
+            self.trade = trade
+
+    class DummyStore:
+        def save(self, payload):
+            self.payload = payload
+
+    market = FakeMarket()
+    state = StateMachine()
+    state.active_cost_usdt = Decimal("1000")
+    state.active_btc = Decimal("0.01")
+    state.register_operation("COMPRA_NIVEL_1")
+    assert state.is_cooling_down()
+
+    price_engine = PriceEngine(market)
+    price_engine.current_price = market.price
+    price_engine.peak_price = market.price
+    price_engine.last_updated = time.time()
+
+    engine = DecisionEngine(
+        market_client=market,
+        price_engine=price_engine,
+        state_machine=state,
+        base_calculator=BaseCalculator(),
+        volatility_engine=FakeVol(),
+        order_manager=OrderManager(market),
+        validator=Validator(market),
+        fee_calculator=FeeCalculator(),
+        exposure_limiter=ExposureLimiter(),
+        bull_protection=BullProtection(),
+        trade_log=DummyLog(),
+        state_store=DummyStore(),
+    )
+
+    engine.on_price_tick(price_engine)
+    assert market.sold > Decimal("0")
+    assert state.active_btc == Decimal("0.0")

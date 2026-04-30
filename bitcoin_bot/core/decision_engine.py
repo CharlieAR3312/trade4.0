@@ -54,10 +54,6 @@ class DecisionEngine:
         
         logger.info(f"Precio: {current_price:.2f} | Avg: {avg_price:.2f} | Profit: {profit_margin*100:.2f}% | RSI: {current_rsi:.1f} | Estado: {self.state_machine.state.value}")
         
-        if self.state_machine.is_cooling_down():
-            self._persist()
-            return
-
         rsi_oversold = Decimal(str(Config.RSI_OVERSOLD))
         rsi_overbought = Decimal(str(Config.RSI_OVERBOUGHT))
         
@@ -78,15 +74,23 @@ class DecisionEngine:
         drop_from_peak = abs(self.price_engine.get_drop_from_peak())
         trailing_triggered = drop_from_peak >= Config.TRAILING_STOP_PCT and profit_margin > 0
 
-        # CONDICIONES DE VENTA
+        # El stop loss nunca debe quedar bloqueado por cooldown.
         if self.state_machine.active_btc > 0:
-            is_profitable = self.fee_calculator.is_profitable(profit_margin) if avg_price > 0 else False
             stop_loss_triggered = profit_margin <= -stop_loss_pct
-            
             if stop_loss_triggered:
                 logger.warning(f"STOP LOSS ACTIVADO: Perdida {profit_margin*100:.2f}% supero limite de {stop_loss_pct*100:.2f}%")
                 self._handle_sell_path(snapshot, True) 
-            elif is_profitable and (current_rsi >= rsi_overbought or trailing_triggered):
+                self._persist()
+                return
+
+        if self.state_machine.is_cooling_down():
+            self._persist()
+            return
+
+        # CONDICIONES DE VENTA
+        if self.state_machine.active_btc > 0:
+            is_profitable = self.fee_calculator.is_profitable(profit_margin) if avg_price > 0 else False
+            if is_profitable and (current_rsi >= rsi_overbought or trailing_triggered):
                 self._handle_sell_path(snapshot, False) 
                 
         # CONDICIONES DE COMPRA
@@ -139,19 +143,28 @@ class DecisionEngine:
             
         # Log y Notificacion
         exec_dict = {
-            "side": execution.side, "symbol": execution.symbol, "price": str(execution.avg_price), 
-            "quantity": str(execution.executed_qty), "quote_amount": str(execution.quote_qty), 
-            "fee_paid": str(execution.fee_qty), "timestamp": execution.timestamp
+            "order_id": execution.order_id, "client_order_id": execution.client_order_id,
+            "status": execution.status, "side": execution.side, "symbol": execution.symbol,
+            "price": str(execution.avg_price), "quantity": str(execution.executed_qty),
+            "quote_amount": str(execution.quote_qty), "fee_paid": str(execution.fee_in_usdt),
+            "fee_qty": str(execution.fee_qty), "fee_asset": execution.fee_asset,
+            "fee_in_usdt": str(execution.fee_in_usdt), "timestamp": execution.timestamp
         }
         self.trade_log.append(exec_dict)
         if self.notifier: self.notifier.notify_sell(exec_dict)
         
+        partial_or_unfilled = execution.status != "FILLED"
         # Registro contable
         self.state_machine.register_sell(
             btc_sold=execution.executed_qty, 
             quote_received=execution.quote_qty, 
-            full_sell=is_stop_loss
+            full_sell=is_stop_loss and not partial_or_unfilled
         )
+        if partial_or_unfilled:
+            self.state_machine.enter_safe_mode(f"Orden de venta no finalizada ({execution.status}). Reconciliacion manual requerida.")
+            if self.notifier: self.notifier.notify_safe_mode(f"Venta {execution.status}")
+            self._persist()
+            return
         
         if not is_stop_loss:
             self.state_machine.register_usdt_received()
@@ -183,14 +196,22 @@ class DecisionEngine:
             return
             
         exec_dict = {
-            "side": execution.side, "symbol": execution.symbol, "price": str(execution.avg_price), 
-            "quantity": str(execution.executed_qty), "quote_amount": str(execution.quote_qty), 
-            "fee_paid": str(execution.fee_qty), "timestamp": execution.timestamp
+            "order_id": execution.order_id, "client_order_id": execution.client_order_id,
+            "status": execution.status, "side": execution.side, "symbol": execution.symbol,
+            "price": str(execution.avg_price), "quantity": str(execution.executed_qty),
+            "quote_amount": str(execution.quote_qty), "fee_paid": str(execution.fee_in_usdt),
+            "fee_qty": str(execution.fee_qty), "fee_asset": execution.fee_asset,
+            "fee_in_usdt": str(execution.fee_in_usdt), "timestamp": execution.timestamp
         }
         self.trade_log.append(exec_dict)
         if self.notifier: self.notifier.notify_buy(exec_dict, level)
         
         self.state_machine.register_buy(level, execution.quote_qty, execution.executed_qty)
+        if execution.status != "FILLED":
+            self.state_machine.enter_safe_mode(f"Orden de compra no finalizada ({execution.status}). Reconciliacion manual requerida.")
+            if self.notifier: self.notifier.notify_safe_mode(f"Compra {execution.status}")
+            self._persist()
+            return
         self.state_machine.register_usdt_spent()
         self.price_engine.reset_peak(execution.avg_price)
 

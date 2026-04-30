@@ -85,10 +85,23 @@ class BinanceClient:
             logger.error("Error obteniendo metadatos del simbolo: %s", exc)
             return None
 
+    def _asset_usdt_price(self, asset: str, fallback_fill_price: Decimal | None = None) -> Decimal | None:
+        if asset == "USDT":
+            return Decimal("1")
+        if asset == "BTC" and fallback_fill_price is not None:
+            return Decimal(str(fallback_fill_price))
+        try:
+            ticker = self.client.get_symbol_ticker(symbol=f"{asset}USDT")
+            return Decimal(ticker["price"])
+        except Exception as exc:
+            logger.error("No fue posible valorar fee en %s contra USDT: %s", asset, exc)
+            return None
+
     def _parse_order_response(self, response: dict) -> OrderExecution:
         # Reconstruccion profunda de Fills para precision contable
         order_id = str(response.get("orderId", ""))
         symbol = response.get("symbol", "")
+        side = response.get("side", "")
         
         # Si la respuesta no tiene fills, intentamos recuperarlos de my_trades
         fills = response.get("fills")
@@ -98,8 +111,8 @@ class BinanceClient:
             except Exception as exc:
                 logger.warning("No se pudieron recuperar fills para la orden %s: %s", order_id, exc)
 
-        executed_qty = Decimal(response.get("executedQty", "0.0"))
-        quote_qty = Decimal(response.get("cummulativeQuoteQty", "0.0"))
+        raw_executed_qty = Decimal(response.get("executedQty", "0.0"))
+        raw_quote_qty = Decimal(response.get("cummulativeQuoteQty", "0.0"))
         
         total_fee_qty = Decimal("0.0")
         fee_asset = ""
@@ -110,30 +123,38 @@ class BinanceClient:
             for fill in fills:
                 f_qty = Decimal(fill.get("commission", "0.0"))
                 f_asset = fill.get("commissionAsset", "")
+                fill_price = Decimal(fill.get("price", "0.0"))
                 total_fee_qty += f_qty
                 if not fee_asset: fee_asset = f_asset
                 
-                # Valoracion de la comision en USDT
-                if f_asset == "USDT":
-                    fee_in_usdt += f_qty
-                elif f_asset == "BTC":
-                    # Usamos el precio del fill para valorar la comision
-                    fee_in_usdt += f_qty * Decimal(fill.get("price", "0.0"))
-                elif f_asset == "BNB":
-                    # TODO: Si se usa BNB, se necesitaria el precio de BNB/USDT. 
-                    # Por ahora lo aproximamos como porcentaje si no tenemos el precio a mano
-                    # o podriamos hacer una llamada rapida. Para evitar latencia, 
-                    # asumimos el fee_pct estandar si es BNB.
-                    fee_in_usdt += f_qty * Decimal("600.0") # Mock price o fetch real
+                fee_price = self._asset_usdt_price(f_asset, fill_price)
+                if fee_price is not None:
+                    fee_in_usdt += f_qty * fee_price
+                else:
+                    logger.critical("Fee sin valoracion fiable: %s %s en orden %s", f_qty, f_asset, order_id)
+
+        executed_qty = raw_executed_qty
+        quote_qty = raw_quote_qty
+        if fee_asset:
+            if side == "BUY":
+                if fee_asset == "BTC":
+                    executed_qty = max(Decimal("0.0"), raw_executed_qty - total_fee_qty)
+                elif fee_asset in ("USDT", "BNB"):
+                    quote_qty = raw_quote_qty + fee_in_usdt
+            elif side == "SELL":
+                if fee_asset == "BTC":
+                    executed_qty = raw_executed_qty + total_fee_qty
+                elif fee_asset == "USDT":
+                    quote_qty = max(Decimal("0.0"), raw_quote_qty - total_fee_qty)
 
         avg_price = Decimal("0.0")
-        if executed_qty > 0:
-            avg_price = quote_qty / executed_qty
+        if raw_executed_qty > 0:
+            avg_price = raw_quote_qty / raw_executed_qty
 
         return OrderExecution(
             order_id=order_id,
             client_order_id=response.get("clientOrderId", ""),
-            side=response.get("side", ""),
+            side=side,
             symbol=symbol,
             status=response.get("status", "UNKNOWN"),
             executed_qty=executed_qty,
