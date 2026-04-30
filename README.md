@@ -1,67 +1,65 @@
-# 🚀 Bitcoin Active Scalper Bot
+# 🚀 Bitcoin Active Scalper Bot (v2.0 - Audit Edition)
 
-Trading bot automatizado para el par **BTC/USDT** en Binance, diseñado para capturar micro-fluctuaciones del mercado mediante análisis técnico de alta frecuencia (RSI) y una gestión de capital inteligente (Profit-Split).
+Trading bot automatizado para el par **BTC/USDT** en Binance, diseñado para capturar micro-fluctuaciones del mercado mediante análisis técnico de alta frecuencia (RSI) y una gestión de capital de grado financiero.
 
 ---
 
 ## 🛠 Características Principales
 
-*   **Estrategia Active Scalper:** Entradas basadas en el indicador **RSI** (Relative Strength Index) en temporalidades de 15 minutos.
-*   **Gestión de Profit 50/50:** Recupera el 100% de tu inversión inicial + el 50% de la ganancia en USDT. El otro 50% de ganancia se mantiene en BTC para acumulación a largo plazo.
-*   **True Break-Even Tracking:** Seguimiento preciso del costo promedio ponderado. El bot nunca vende en pérdida, asegurando que cada salida sea rentable sobre el costo real de adquisición.
-*   **Control Total vía Telegram:** Panel interactivo para monitorear el estado, ver el PnL, pausar/reanudar y recibir notificaciones en tiempo real.
-*   **Motor de Volatilidad (ATR):** Ajuste dinámico de umbrales basado en el Average True Range del mercado.
+*   **Estrategia Active Scalper:** Entradas basadas en el indicador **RSI** (Relative Strength Index) y volatilidad **ATR**.
+*   **Gestión de Riesgo Dinámica (Stop Loss):** Protege el capital mediante un Stop Loss dinámico basado en ATR. El bot prioriza la supervivencia del capital sobre el "bag holding".
+*   **Contabilidad de Doble Cubeta:** Separa estrictamente la **Posición Activa** (capital en riesgo) de la **Ganancia Acumulada** (BTC netos). Esto garantiza un cálculo de Break-Even real y sin distorsiones.
+*   **Gestión de Profit Split:** Recupera el 100% de la inversión + el 50% de la ganancia en USDT. El excedente se mueve a una bóveda de beneficios acumulados con costo base cero.
+*   **Reconciliación por Delta:** Compara el balance esperado de la estrategia contra el exchange en tiempo real, ignorando fondos externos o "dust" previo.
+*   **Precisión Bancaria:** Uso de `decimal.Decimal` en todos los cálculos financieros para eliminar errores de redondeo de punto flotante.
 
 ---
 
 ## 📈 Lógica de Trading
 
 ### Compras (Entrada)
-*   **Gatillo:** RSI <= 30 (Zona de sobreventa).
+*   **Gatillo Principal:** RSI <= 30 (Sobreventa).
 *   **Nivel 2 (DCA):** RSI <= 25 para promediar precio si la caída continúa.
+*   **Position Sizing:** El tamaño de la orden se calcula automáticamente para que una ejecución de Stop Loss no exceda el **1.5% del capital total**.
 
 ### Ventas (Salida)
-*   **Condición 1:** Precio actual > Costo Promedio (Profit asegurado).
-*   **Condición 2:** RSI >= 70 (Sobrecompra) **O** Trailing Stop activo (caída de 1.5% desde el pico).
+*   **Profit Split:** Precio > Costo Promedio + RSI >= 70 (Sobrecompra) **O** Trailing Stop activo.
+*   **Stop Loss:** Gatillo dinámico basado en ATR (típicamente entre 1% y 3% según la volatilidad).
 
 ---
 
 ## 📲 Comandos de Telegram
 
-*   `/start`: Activa el panel de control interactivo.
-*   `/status`: Muestra el precio actual, el costo promedio, el RSI y el profit real de la operación abierta.
-*   `/pnl`: Reporte detallado de ganancias históricas y métricas de rendimiento.
-*   `/logs`: Visualiza las últimas líneas de actividad del bot en el servidor.
-*   `/help`: Lista de comandos disponibles.
+*   `/start`: Panel de control interactivo.
+*   `/status`: Precio actual, costo promedio real, RSI y balance detallado (Activo vs Acumulado).
+*   `/pnl`: Reporte de ROI basado en capital máximo desplegado y BTC netos ganados.
+*   `/logs`: Visualiza la actividad reciente.
 
 ---
 
 ## 🚀 Instalación y Despliegue
 
-### Requisitos
-*   Python 3.8+
-*   API Key de Binance (con permisos de Spot Trading).
-*   Token de Bot de Telegram y Chat ID.
-
-### Configuración
-1.  Clona el repositorio: `git clone https://github.com/CharlieAR3312/bitcoin-bot.git`
-2.  Instala dependencias: `pip install -r requirements.txt`
-3.  Configura tus credenciales en el archivo `config.py` o mediante variables de entorno en un archivo `.env`.
-
-### Ejecución en Google Cloud (GCP)
-El bot incluye archivos de configuración para desplegarse como un servicio de sistema (`systemd`):
+### Modo Demo (Seguro y Offline)
+Puedes probar la lógica completa del bot sin red y sin API Keys:
 ```bash
-# Actualizar código en el servidor
-git pull origin main
-sudo cp -r * /opt/bitcoin-bot/
-sudo systemctl restart bitcoin-bot
+python -m bitcoin_bot.main --demo
 ```
+
+### Configuración Live
+1.  Clona el repositorio.
+2.  Instala dependencias: `pip install -r requirements.txt`
+3.  Crea un archivo `.env` con tus credenciales:
+    ```env
+    BINANCE_API_KEY=tu_key
+    BINANCE_SECRET_KEY=tu_secret
+    TELEGRAM_BOT_TOKEN=tu_token
+    TELEGRAM_CHAT_ID=tu_id
+    TELEGRAM_AUTHORIZED_USER_ID=tu_id
+    ```
+4.  Ejecuta el bot: `python -m bitcoin_bot.main`
 
 ---
 
 ## ⚠️ Descargo de Responsabilidad (Disclaimer)
 
-Este software es para fines educativos y herramientas de trading. El trading de criptomonedas conlleva un riesgo significativo de pérdida de capital. No inviertas dinero que no puedas permitirte perder. El autor no se hace responsable de las pérdidas financieras incurridas por el uso de este bot.
-
----
-*Desarrollado con ❤️ para maximizar satoshis y dólares.*
+Este software es para fines educativos. El trading de criptomonedas conlleva un riesgo significativo. El autor no se hace responsable de las pérdidas financieras incurridas. **Nunca operes con dinero que no puedas permitirte perder.**

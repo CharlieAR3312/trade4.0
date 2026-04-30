@@ -33,4 +33,5 @@ Thumbs.db
 *.swo
 
 # Archivos de prueba
-test_*.py
+# (Los tests deben estar en la carpeta tests/ y subirse a git)
+

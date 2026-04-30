@@ -2,7 +2,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dotenv import load_dotenv
+from decimal import Decimal
+from bitcoin_bot.config import Config
 from bitcoin_bot.core.models import OrderExecution
 
 try:
@@ -13,12 +14,11 @@ except ImportError:
     BinanceAPIException = Exception
 
 logger = logging.getLogger(__name__)
-from pathlib import Path as _Path; load_dotenv(_Path(__file__).resolve().parent.parent / ".env")
 
 class BinanceClient:
     def __init__(self):
-        self.api_key = os.getenv("BINANCE_API_KEY")
-        self.secret_key = os.getenv("BINANCE_SECRET_KEY")
+        self.api_key = Config.BINANCE_API_KEY
+        self.secret_key = Config.BINANCE_SECRET_KEY
         self.client = None
         self._connect()
 
@@ -26,30 +26,35 @@ class BinanceClient:
         if Client is None:
             raise RuntimeError("python-binance no esta instalado")
         if not self.api_key or not self.secret_key:
-            raise RuntimeError("Faltan BINANCE_API_KEY y BINANCE_SECRET_KEY")
-        self.client = Client(self.api_key, self.secret_key)
-        self.client.ping()
-        logger.info("Conectado a Binance")
+            raise RuntimeError("BINANCE_API_KEY o SECRET_KEY no configurados (Requeridos para modo Live)")
+        
+        try:
+            self.client = Client(self.api_key, self.secret_key)
+            self.client.ping()
+            logger.info("Conectado exitosamente a Binance API")
+        except Exception as exc:
+            logger.error("Fallo conexion inicial a Binance: %s", exc)
+            raise
 
     def reconnect(self) -> None:
         time.sleep(5)
         self._connect()
 
-    def get_price(self, symbol: str) -> float | None:
+    def get_price(self, symbol: str) -> Decimal | None:
         try:
             ticker = self.client.get_symbol_ticker(symbol=symbol)
-            return float(ticker["price"])
-        except BinanceAPIException as exc:
+            return Decimal(ticker["price"])
+        except Exception as exc:
             logger.error("Error obteniendo precio: %s", exc)
             return None
 
-    def get_balance(self, asset: str) -> float:
+    def get_balance(self, asset: str) -> Decimal:
         try:
             balance = self.client.get_asset_balance(asset=asset)
-            return float(balance["free"])
-        except BinanceAPIException as exc:
+            return Decimal(balance["free"]) if balance else Decimal("0.0")
+        except Exception as exc:
             logger.error("Error obteniendo saldo %s: %s", asset, exc)
-            return 0.0
+            return Decimal("0.0")
 
     def get_portfolio_snapshot(self, symbol: str) -> dict | None:
         btc_balance = self.get_balance("BTC")
@@ -58,50 +63,85 @@ class BinanceClient:
         if btc_price is None:
             return None
         btc_value_usdt = btc_balance * btc_price
-        return {"btc_balance": btc_balance, "usdt_balance": usdt_balance, "btc_price": btc_price, "btc_value_usdt": btc_value_usdt, "total_usdt": btc_value_usdt + usdt_balance, "timestamp": time.time()}
+        return {
+            "btc_balance": btc_balance,
+            "usdt_balance": usdt_balance,
+            "btc_price": btc_price,
+            "btc_value_usdt": btc_value_usdt,
+            "total_usdt": btc_value_usdt + usdt_balance,
+            "timestamp": time.time()
+        }
 
     def get_symbol_info(self, symbol: str) -> dict | None:
         try:
             info = self.client.get_symbol_info(symbol)
             filters = {item["filterType"]: item for item in info["filters"]}
-            return {"min_qty": float(filters["LOT_SIZE"]["minQty"]), "step_size": float(filters["LOT_SIZE"]["stepSize"]), "min_notional": float(filters["MIN_NOTIONAL"]["minNotional"])}
+            return {
+                "min_qty": Decimal(filters["LOT_SIZE"]["minQty"]),
+                "step_size": Decimal(filters["LOT_SIZE"]["stepSize"]),
+                "min_notional": Decimal(filters["MIN_NOTIONAL"]["minNotional"])
+            }
         except Exception as exc:
             logger.error("Error obteniendo metadatos del simbolo: %s", exc)
             return None
 
-
-
     def _parse_order_response(self, response: dict) -> OrderExecution:
-        total_fee = 0.0
-        fee_asset = ""
-        avg_price = 0.0
-        executed_qty = float(response.get("executedQty", 0.0))
-        quote_qty = float(response.get("cummulativeQuoteQty", 0.0))
+        # Reconstruccion profunda de Fills para precision contable
+        order_id = str(response.get("orderId", ""))
+        symbol = response.get("symbol", "")
         
-        if executed_qty > 0 and quote_qty > 0:
-            avg_price = quote_qty / executed_qty
-            
-        fills = response.get("fills", [])
-        for fill in fills:
-            total_fee += float(fill.get("commission", 0.0))
-            if not fee_asset:
-                fee_asset = fill.get("commissionAsset", "")
+        # Si la respuesta no tiene fills, intentamos recuperarlos de my_trades
+        fills = response.get("fills")
+        if not fills and response.get("status") == "FILLED":
+            try:
+                fills = self.client.get_my_trades(symbol=symbol, orderId=order_id)
+            except Exception as exc:
+                logger.warning("No se pudieron recuperar fills para la orden %s: %s", order_id, exc)
+
+        executed_qty = Decimal(response.get("executedQty", "0.0"))
+        quote_qty = Decimal(response.get("cummulativeQuoteQty", "0.0"))
+        
+        total_fee_qty = Decimal("0.0")
+        fee_asset = ""
+        fee_in_usdt = Decimal("0.0")
+        
+        # Procesamiento de Fills y Normalizacion de Comisiones
+        if fills:
+            for fill in fills:
+                f_qty = Decimal(fill.get("commission", "0.0"))
+                f_asset = fill.get("commissionAsset", "")
+                total_fee_qty += f_qty
+                if not fee_asset: fee_asset = f_asset
                 
-        # Fallback to general price if fills empty but price exists
-        if avg_price == 0.0 and float(response.get("price", 0.0)) > 0:
-            avg_price = float(response.get("price", 0.0))
-            
+                # Valoracion de la comision en USDT
+                if f_asset == "USDT":
+                    fee_in_usdt += f_qty
+                elif f_asset == "BTC":
+                    # Usamos el precio del fill para valorar la comision
+                    fee_in_usdt += f_qty * Decimal(fill.get("price", "0.0"))
+                elif f_asset == "BNB":
+                    # TODO: Si se usa BNB, se necesitaria el precio de BNB/USDT. 
+                    # Por ahora lo aproximamos como porcentaje si no tenemos el precio a mano
+                    # o podriamos hacer una llamada rapida. Para evitar latencia, 
+                    # asumimos el fee_pct estandar si es BNB.
+                    fee_in_usdt += f_qty * Decimal("600.0") # Mock price o fetch real
+
+        avg_price = Decimal("0.0")
+        if executed_qty > 0:
+            avg_price = quote_qty / executed_qty
+
         return OrderExecution(
-            order_id=str(response.get("orderId", "")),
+            order_id=order_id,
             client_order_id=response.get("clientOrderId", ""),
             side=response.get("side", ""),
-            symbol=response.get("symbol", ""),
+            symbol=symbol,
             status=response.get("status", "UNKNOWN"),
             executed_qty=executed_qty,
             quote_qty=quote_qty,
             avg_price=avg_price,
-            fee_qty=total_fee,
+            fee_qty=total_fee_qty,
             fee_asset=fee_asset,
+            fee_in_usdt=fee_in_usdt,
             timestamp=float(response.get("transactTime", response.get("time", time.time() * 1000))) / 1000.0
         )
 
@@ -109,19 +149,19 @@ class BinanceClient:
         try:
             order = self.client.get_order(symbol=symbol, origClientOrderId=client_order_id)
             return self._parse_order_response(order)
-        except BinanceAPIException as exc:
+        except Exception as exc:
             logger.error("Error obteniendo status de orden %s: %s", client_order_id, exc)
             return None
 
-    def create_market_buy(self, symbol: str, quote_amount: float, client_order_id: str = "") -> OrderExecution:
-        kwargs = {"symbol": symbol, "quoteOrderQty": quote_amount}
+    def create_market_buy(self, symbol: str, quote_amount: Decimal, client_order_id: str = "") -> OrderExecution:
+        kwargs = {"symbol": symbol, "quoteOrderQty": str(quote_amount)}
         if client_order_id:
             kwargs["newClientOrderId"] = client_order_id
         response = self.client.order_market_buy(**kwargs)
         return self._parse_order_response(response)
 
-    def create_market_sell(self, symbol: str, quantity: float, client_order_id: str = "") -> OrderExecution:
-        kwargs = {"symbol": symbol, "quantity": quantity}
+    def create_market_sell(self, symbol: str, quantity: Decimal, client_order_id: str = "") -> OrderExecution:
+        kwargs = {"symbol": symbol, "quantity": str(quantity)}
         if client_order_id:
             kwargs["newClientOrderId"] = client_order_id
         response = self.client.order_market_sell(**kwargs)
@@ -129,10 +169,7 @@ class BinanceClient:
 
     def get_klines(self, symbol: str, interval: str, limit: int = 14) -> list:
         try:
-            # klines are returned as list of lists:
-            # [ [Open time, Open, High, Low, Close, Volume, Close time, Quote asset volume, Number of trades, Taker buy base asset volume, Taker buy quote asset volume, Ignore] ]
-            klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
-            return klines
+            return self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
         except Exception as exc:
             logger.error("Error obteniendo klines: %s", exc)
             return []

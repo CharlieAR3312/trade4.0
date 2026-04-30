@@ -2,10 +2,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from decimal import Decimal
 
-# Asegurar carga de .env ANTES de inicializar Config
+# Carga de .env (opcional para --demo)
 _env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=_env_path)
+if _env_path.exists():
+    load_dotenv(dotenv_path=_env_path)
 
 class Config:
     SYMBOL = "BTCUSDT"
@@ -13,42 +15,50 @@ class Config:
     QUOTE_ASSET = "USDT"
     PRICE_INTERVAL_SECONDS = 15
     
-    # Configuracion de Volatilidad (ATR y RSI)
-    BASE_SELL_THRESHOLD_PCT = float(os.getenv("BOT_MIN_SELL_THRESHOLD_PCT", "0.015"))
-    BASE_BUY_LEVEL_1_PCT = float(os.getenv("BOT_BUY_LEVEL_1_PCT", "0.020"))
-    BASE_BUY_LEVEL_2_PCT = float(os.getenv("BOT_BUY_LEVEL_2_PCT", "0.040"))
+    # Configuracion de Volatilidad (Decimal)
+    BASE_SELL_THRESHOLD_PCT = Decimal(os.getenv("BOT_MIN_SELL_THRESHOLD_PCT", "0.015"))
+    BASE_BUY_LEVEL_1_PCT = Decimal(os.getenv("BOT_BUY_LEVEL_1_PCT", "0.020"))
+    BASE_BUY_LEVEL_2_PCT = Decimal(os.getenv("BOT_BUY_LEVEL_2_PCT", "0.040"))
     
-    ATR_MULTIPLIER_SELL = 0.5
-    ATR_MULTIPLIER_BUY_1 = 0.8
-    ATR_MULTIPLIER_BUY_2 = 1.5
+    ATR_MULTIPLIER_SELL = Decimal("0.5")
+    ATR_MULTIPLIER_BUY_1 = Decimal("0.8")
+    ATR_MULTIPLIER_BUY_2 = Decimal("1.5")
     
     KLINES_INTERVAL = "15m"
     RSI_PERIOD = 14
     RSI_OVERSOLD = 30
     RSI_OVERBOUGHT = 70
 
-    PROFIT_SPLIT_USDT_PCT = 0.50
+    PROFIT_SPLIT_USDT_PCT = Decimal("0.50")
 
     # Risk Management
-    STOP_LOSS_ATR_MULTIPLIER = float(os.getenv("BOT_STOP_LOSS_ATR_MULT", "1.5"))
-    RISK_PER_TRADE_PCT = float(os.getenv("BOT_RISK_PER_TRADE_PCT", "0.015")) # Riesgo del 1.5% del capital total
-    TRAILING_STOP_PCT = float(os.getenv("BOT_TRAILING_STOP_PCT", "0.005"))
+    STOP_LOSS_ATR_MULTIPLIER = Decimal(os.getenv("BOT_STOP_LOSS_ATR_MULT", "1.5"))
+    RISK_PER_TRADE_PCT = Decimal(os.getenv("BOT_RISK_PER_TRADE_PCT", "0.015"))
+    TRAILING_STOP_PCT = Decimal(os.getenv("BOT_TRAILING_STOP_PCT", "0.005"))
 
-    BUY_LEVEL_1_USDT_PCT = 0.60
-    BUY_LEVEL_2_USDT_PCT = 0.40
-    MAX_SELL_PCT_PER_CYCLE = 0.15
-    BINANCE_FEE_PCT = 0.001
-    MIN_NET_GAIN_RATIO = 0.30
-    MIN_USDT_TO_OPERATE = 1.50
-    MIN_BTC_TO_SELL = 0.00001
+    BUY_LEVEL_1_USDT_PCT = Decimal("0.60")
+    BUY_LEVEL_2_USDT_PCT = Decimal("0.40")
+    MAX_SELL_PCT_PER_CYCLE = Decimal("0.15")
+    BINANCE_FEE_PCT = Decimal("0.001")
+    MIN_NET_GAIN_RATIO = Decimal("0.30")
+    MIN_USDT_TO_OPERATE = Decimal("1.50")
+    MIN_BTC_TO_SELL = Decimal("0.00001")
+    
     COOLDOWN_MINUTES = 10
     BULL_PROTECTION_DAYS = 3
-    BULL_REDUCED_BUY_PCT = 0.01
+    BULL_REDUCED_BUY_PCT = Decimal("0.01")
     BULL_FORCE_BUY_DAYS = 5
-    BULL_FORCE_BUY_USDT_PCT = 0.25
+    BULL_FORCE_BUY_USDT_PCT = Decimal("0.25")
+    
     ORDER_MAX_RETRIES = 3
     ORDER_RETRY_BASE_SECONDS = 5
     TRADING_MODE = os.getenv("BOT_TRADING_MODE", "paper").lower()
+    
+    # Credenciales opcionales
+    BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
+    BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "")
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "0")
     TELEGRAM_AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_AUTHORIZED_USER_ID", "0"))
     
     ROOT_DIR = Path(__file__).resolve().parent.parent

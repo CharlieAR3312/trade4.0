@@ -3,11 +3,13 @@ import argparse
 import logging
 import random
 import time
+import os
+from decimal import Decimal
+
 from bitcoin_bot.config import Config
 from bitcoin_bot.core.base_calculator import BaseCalculator
 from bitcoin_bot.core.decision_engine import DecisionEngine
 from bitcoin_bot.core.price_engine import PriceEngine
-import os
 from bitcoin_bot.core.engine_state import GlobalEngineState
 from bitcoin_bot.core.pnl_tracker import PnLTracker
 from bitcoin_bot.storage.database import DBManager
@@ -35,6 +37,7 @@ def setup_logging() -> None:
 def build_market_client():
     if Config.TRADING_MODE == "live":
         return BinanceClient()
+    # Paper mode por defecto NO intenta conectar a Binance real en el constructor
     return PaperBinanceClient()
 
 def build_engine(market_client):
@@ -44,30 +47,35 @@ def build_engine(market_client):
 
     state_store = StateStore(db_manager)
     persisted = state_store.load()
+    
     state_machine = StateMachine.from_dict(persisted.get("state_machine"))
     base_calculator = BaseCalculator.from_dict(persisted.get("base"))
+    
     price_engine = PriceEngine(market_client, engine_state)
-    price_engine.peak_price = persisted.get("peak_price")
+    peak = persisted.get("peak_price")
+    if peak:
+        price_engine.peak_price = Decimal(str(peak))
     
     volatility_engine = VolatilityEngine(market_client)
     
-    # Inicializar Telegram Notifier
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    # Notificador opcional
     notifier = None
-    if token and chat_id:
-        notifier = TelegramNotifier(
-            token=token,
-            chat_id=chat_id,
-            price_engine=price_engine,
-            state_machine=state_machine,
-            base_calculator=base_calculator,
-            market_client=market_client,
-            stop_callback=engine_state.stop,
-            engine_state=engine_state,
-            pnl_tracker=pnl_tracker
-        )
-        notifier.start()
+    if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID != "0":
+        try:
+            notifier = TelegramNotifier(
+                token=Config.TELEGRAM_BOT_TOKEN,
+                chat_id=Config.TELEGRAM_CHAT_ID,
+                price_engine=price_engine,
+                state_machine=state_machine,
+                base_calculator=base_calculator,
+                market_client=market_client,
+                stop_callback=engine_state.stop,
+                engine_state=engine_state,
+                pnl_tracker=pnl_tracker
+            )
+            notifier.start()
+        except Exception as exc:
+            logging.error("No se pudo iniciar Telegram Notifier: %s", exc)
     
     engine = DecisionEngine(
         market_client=market_client,
@@ -87,22 +95,33 @@ def build_engine(market_client):
     return price_engine, engine, engine_state
 
 def run_paper_demo(price_engine, engine, market_client, steps: int) -> None:
+    logger = logging.getLogger(__name__)
+    logger.info("Iniciando DEMO Offline (Paper Mode)...")
     for _ in range(steps):
-        delta = random.uniform(-0.012, 0.012)
-        next_price = max(1000.0, market_client.get_price(Config.SYMBOL) * (1 + delta))
+        var = Decimal(str(random.uniform(-0.012, 0.012)))
+        current = market_client.get_price(Config.SYMBOL)
+        next_price = max(Decimal("1000.0"), current * (Decimal("1") + var))
+        
         market_client.set_price(next_price)
         price_engine.fetch_price()
         engine.on_price_tick(price_engine)
         time.sleep(0.1)
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Bot acumulador BTC/USDT")
-    parser.add_argument("--demo", action="store_true", help="Simulacion corta en modo paper")
+    parser = argparse.ArgumentParser(description="Bot acumulador BTC/USDT - Remediation Audit Edition")
+    parser.add_argument("--demo", action="store_true", help="Simulacion 100% offline sin red")
     parser.add_argument("--steps", type=int, default=40, help="Ticks a usar en demo")
     args = parser.parse_args()
+    
     setup_logging()
+    
+    # En modo demo forzamos modo paper aunque el .env diga live
+    if args.demo:
+        Config.TRADING_MODE = "paper"
+        
     market_client = build_market_client()
     price_engine, engine, engine_state = build_engine(market_client)
+    
     if args.demo:
         run_paper_demo(price_engine, engine, market_client, args.steps)
     else:

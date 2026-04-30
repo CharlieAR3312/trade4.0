@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
+from decimal import Decimal
 from bitcoin_bot.config import Config
 
 logger = logging.getLogger(__name__)
@@ -10,27 +11,37 @@ class PriceEngine:
     def __init__(self, market_client, engine_state=None):
         self.client = market_client
         self.engine_state = engine_state
-        self.current_price = None
-        self.peak_price = None
-        self.last_updated = None
+        self.current_price: Decimal | None = None
+        self.peak_price: Decimal | None = None
+        self.last_updated: float | None = None
         self.price_history: list[dict] = []
         self.error_count = 0
         self.max_errors = 5
 
-    def fetch_price(self) -> float | None:
+    def fetch_price(self) -> Decimal | None:
         try:
             price = self.client.get_price(Config.SYMBOL)
             if price is None or price <= 0:
                 raise ValueError(f"Precio invalido: {price}")
+            
+            price = Decimal(str(price))
             self.error_count = 0
             self.current_price = price
             self.last_updated = time.time()
+            
             if self.peak_price is None or price > self.peak_price:
                 self.peak_price = price
-            self.price_history.append({"price": price, "timestamp": self.last_updated, "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+            
+            self.price_history.append({
+                "price": str(price), 
+                "timestamp": self.last_updated, 
+                "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            })
+            
             if len(self.price_history) > 200:
                 self.price_history.pop(0)
-            logger.info("BTC/USDT %.2f | Pico %.2f", price, self.peak_price)
+            
+            logger.info("BTC/USDT %.2f | Pico %.2f", float(price), float(self.peak_price))
             return price
         except Exception as exc:
             self.error_count += 1
@@ -39,22 +50,27 @@ class PriceEngine:
                 self._handle_connection_loss()
             return None
 
-    def reset_peak(self, new_peak: float | None = None) -> None:
-        self.peak_price = new_peak or self.current_price
+    def reset_peak(self, new_peak: Decimal | float | None = None) -> None:
+        if new_peak is not None:
+            self.peak_price = Decimal(str(new_peak))
+        else:
+            self.peak_price = self.current_price
+            
         if self.peak_price is not None:
-            logger.info("Pico reseteado a %.2f", self.peak_price)
+            logger.info("Pico reseteado a %.2f", float(self.peak_price))
 
     def is_fresh(self) -> bool:
         return self.last_updated is not None and (time.time() - self.last_updated) < (Config.PRICE_INTERVAL_SECONDS + 5)
 
-    def get_change_from_base(self, base_price: float | None) -> float:
+    def get_change_from_base(self, base_price: Decimal | float | None) -> Decimal:
         if self.current_price is None or base_price in (None, 0):
-            return 0.0
+            return Decimal("0.0")
+        base_price = Decimal(str(base_price))
         return (self.current_price - base_price) / base_price
 
-    def get_drop_from_peak(self) -> float:
+    def get_drop_from_peak(self) -> Decimal:
         if self.current_price is None or self.peak_price in (None, 0):
-            return 0.0
+            return Decimal("0.0")
         return (self.current_price - self.peak_price) / self.peak_price
 
     def run_loop(self, callback) -> None:
@@ -65,7 +81,7 @@ class PriceEngine:
                     logger.info("Motor global detenido. Saliendo del loop...")
                     break
                 if self.engine_state.is_paused():
-                    time.sleep(2)  # Check in a short interval while paused
+                    time.sleep(2)
                     continue
 
             try:

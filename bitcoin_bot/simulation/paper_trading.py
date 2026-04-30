@@ -2,83 +2,94 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+import random
+from decimal import Decimal
 from bitcoin_bot.config import Config
 from bitcoin_bot.core.models import OrderExecution
-from bitcoin_bot.exchange.binance_client import BinanceClient
 
 logger = logging.getLogger(__name__)
 
 class PaperBinanceClient:
-    def __init__(self):
-        # We wrap the real client to fetch real market data and real initial balances
-        self.real_client = BinanceClient()
-        
-        logger.info("Conectando a Binance para obtener balances reales iniciales para Paper Trading...")
-        # Get real portfolio to seed the simulator
-        try:
-            snapshot = self.real_client.get_portfolio_snapshot(Config.SYMBOL)
-        except Exception as exc:
-            logger.error("Fallo al conectar a Binance en Paper Mode. Usando defaults. Error: %s", exc)
-            snapshot = None
-            
-        if snapshot:
-            self.balances = {"BTC": snapshot["btc_balance"], "USDT": snapshot["usdt_balance"]}
-            logger.info("Balances cargados desde Binance: %.8f BTC, %.2f USDT", self.balances["BTC"], self.balances["USDT"])
-        else:
-            self.balances = {"BTC": 0.01, "USDT": 1000.0}
-            logger.warning("Usando balances por defecto debido a error de conexion.")
-            
-        self.current_price = self.real_client.get_price(Config.SYMBOL)
-        self.symbol_info = self.real_client.get_symbol_info(Config.SYMBOL)
+    """
+    Simulador de Binance que NO requiere API Keys.
+    Puede funcionar de forma 100% offline o con un proveedor de datos.
+    """
+    def __init__(self, initial_btc: str = "0.01", initial_usdt: str = "1000.0"):
+        self.balances = {
+            "BTC": Decimal(initial_btc),
+            "USDT": Decimal(initial_usdt)
+        }
+        self.current_price = Decimal("65000.0")
+        self.symbol_info = {
+            "min_qty": Config.MIN_BTC_TO_SELL,
+            "step_size": Config.MIN_BTC_TO_SELL,
+            "min_notional": Config.MIN_USDT_TO_OPERATE
+        }
+        # Proveedor de datos opcional (inyectado externamente si se desea Live Paper)
+        self.data_provider = None 
 
     def reconnect(self) -> None:
-        self.real_client.reconnect()
+        pass
 
-    def get_price(self, symbol: str) -> float:
-        self.current_price = self.real_client.get_price(symbol)
+    def get_price(self, symbol: str) -> Decimal:
+        if self.data_provider:
+            self.current_price = self.data_provider.get_price(symbol)
         return self.current_price
 
-    def set_price(self, price: float) -> None:
-        # Used strictly for fast-forward testing (e.g. --demo flag)
-        self.current_price = price
+    def set_price(self, price: Decimal | float) -> None:
+        self.current_price = Decimal(str(price))
 
-    def get_balance(self, asset: str) -> float:
-        return self.balances.get(asset, 0.0)
+    def get_balance(self, asset: str) -> Decimal:
+        return self.balances.get(asset, Decimal("0.0"))
 
     def get_portfolio_snapshot(self, symbol: str) -> dict:
         btc_value_usdt = self.balances["BTC"] * self.current_price
         return {
-            "btc_balance": self.balances["BTC"], 
-            "usdt_balance": self.balances["USDT"], 
-            "btc_price": self.current_price, 
-            "btc_value_usdt": btc_value_usdt, 
-            "total_usdt": btc_value_usdt + self.balances["USDT"], 
+            "btc_balance": self.balances["BTC"],
+            "usdt_balance": self.balances["USDT"],
+            "btc_price": self.current_price,
+            "btc_value_usdt": btc_value_usdt,
+            "total_usdt": btc_value_usdt + self.balances["USDT"],
             "timestamp": time.time()
         }
 
     def get_symbol_info(self, symbol: str) -> dict:
-        return self.real_client.get_symbol_info(symbol)
+        return self.symbol_info
 
     def get_klines(self, symbol: str, interval: str, limit: int = 14) -> list:
-        # Fetch real klines from Binance for RSI/ATR calculation
-        return self.real_client.get_klines(symbol, interval, limit)
+        if self.data_provider:
+            return self.data_provider.get_klines(symbol, interval, limit)
+            
+        # Mock klines offline
+        klines = []
+        now = int(time.time() * 1000)
+        base = self.current_price
+        for i in range(limit):
+            var = Decimal(str(random.uniform(-0.01, 0.01)))
+            close_p = base * (Decimal("1") + var)
+            klines.append([
+                now - (limit - i) * 3600000,
+                str(base), str(max(base, close_p) * Decimal("1.001")), 
+                str(min(base, close_p) * Decimal("0.999")), str(close_p), "0"
+            ])
+            base = close_p
+        return klines
 
     def get_order_status(self, symbol: str, client_order_id: str) -> OrderExecution | None:
         return None
 
-    def create_market_buy(self, symbol: str, quote_amount: float, client_order_id: str = "") -> OrderExecution:
-        # We use the freshest price for the execution
-        exec_price = self.get_price(symbol)
-        
+    def create_market_buy(self, symbol: str, quote_amount: Decimal | float, client_order_id: str = "") -> OrderExecution:
+        quote_amount = Decimal(str(quote_amount))
         if quote_amount > self.balances["USDT"]:
             raise RuntimeError("USDT insuficiente en paper trading")
             
         fee_paid = quote_amount * Config.BINANCE_FEE_PCT
-        quantity = (quote_amount - fee_paid) / exec_price
+        quantity = (quote_amount - fee_paid) / self.current_price
         
         self.balances["USDT"] -= quote_amount
         self.balances["BTC"] += quantity
-        logger.info("Paper BUY %.2f USDT -> %.8f BTC a $%.2f", quote_amount, quantity, exec_price)
+        
+        logger.info("Paper BUY %.2f USDT -> %.8f BTC a $%.2f", quote_amount, quantity, self.current_price)
         
         return OrderExecution(
             order_id=str(uuid.uuid4()),
@@ -88,26 +99,26 @@ class PaperBinanceClient:
             status="FILLED",
             executed_qty=quantity,
             quote_qty=quote_amount,
-            avg_price=exec_price,
+            avg_price=self.current_price,
             fee_qty=fee_paid,
             fee_asset="USDT",
+            fee_in_usdt=fee_paid,
             timestamp=time.time()
         )
 
-    def create_market_sell(self, symbol: str, quantity: float, client_order_id: str = "") -> OrderExecution:
-        # We use the freshest price for the execution
-        exec_price = self.get_price(symbol)
-        
+    def create_market_sell(self, symbol: str, quantity: Decimal | float, client_order_id: str = "") -> OrderExecution:
+        quantity = Decimal(str(quantity))
         if quantity > self.balances["BTC"]:
             raise RuntimeError("BTC insuficiente en paper trading")
             
-        gross_quote = quantity * exec_price
+        gross_quote = quantity * self.current_price
         fee_paid = gross_quote * Config.BINANCE_FEE_PCT
         net_quote = gross_quote - fee_paid
         
         self.balances["BTC"] -= quantity
         self.balances["USDT"] += net_quote
-        logger.info("Paper SELL %.8f BTC -> %.2f USDT a $%.2f", quantity, net_quote, exec_price)
+        
+        logger.info("Paper SELL %.8f BTC -> %.2f USDT a $%.2f", quantity, net_quote, self.current_price)
         
         return OrderExecution(
             order_id=str(uuid.uuid4()),
@@ -117,8 +128,9 @@ class PaperBinanceClient:
             status="FILLED",
             executed_qty=quantity,
             quote_qty=net_quote,
-            avg_price=exec_price,
+            avg_price=self.current_price,
             fee_qty=fee_paid,
             fee_asset="USDT",
+            fee_in_usdt=fee_paid,
             timestamp=time.time()
         )
