@@ -118,21 +118,21 @@ class TelegramNotifier:
         }
 
     def _build_status_msg(self, data: Dict[str, Any], title: str = "📊 *STATUS*") -> str:
-        avg_str = f"${data['avg_price']:,.2f}" if data['avg_price'] > 0 else "N/A"
-        change_str = f"{data['change']:+.2f}%" if data['avg_price'] > 0 else "0.00%"
+        avg_str = f"${float(data['avg_price']):,.2f}" if data['avg_price'] > 0 else "N/A"
+        change_str = f"{float(data['change']):+.2f}%" if data['avg_price'] > 0 else "0.00%"
         
         return (f"{title} | `{datetime.now().strftime('%H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🚀 Motor: `{data['engine']}`\n"
             f"🤖 Modo: `{data['mode']}`\n"
             f"🔄 Estado: `{data['state']}`\n\n"
-            f"💰 Precio: `${data['price']:,.2f}`\n"
+            f"💰 Precio: `${float(data['price']):,.2f}`\n"
             f"⚖️ Costo Promedio (Break Even): `{avg_str}`\n"
             f"{data['trend_emoji']} Profit Real: `{change_str}`\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"₿  BTC:  `{data['btc']:.8f}`\n"
-            f"💵 USDT: `{data['usdt']:.2f}`\n"
-            f"🏦 TOTAL: `${data['total']:,.2f}`")
+            f"₿  BTC:  `{float(data['btc']):.8f}`\n"
+            f"💵 USDT: `{float(data['usdt']):.2f}`\n"
+            f"🏦 TOTAL: `${float(data['total']):,.2f}`")
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [["📊 Status", "📈 PnL"], ["⏸️ Pause", "▶️ Resume"], ["🛑 STOP"]]
@@ -213,24 +213,18 @@ class TelegramNotifier:
         await update.message.reply_text("🤖 *Comandos disponibles*\n/start — Panel de control\n/status — Estado actual\n/logs — Últimas líneas del log\n/help — Esta ayuda", parse_mode=ParseMode.MARKDOWN)
 
     def notify_buy(self, execution: dict, level: int) -> None:
-        self.send(f"🟢 *COMPRA REALIZADA*\n━━━━━━━━━━━━━━━━━━\n📍 Nivel: `{level}`\n💰 USDT: `{execution.get('quote_amount', 0):.2f}`\n₿  BTC: `{execution.get('quantity', 0):.8f}`\n📈 Precio: `${execution.get('price', 0):,.2f}`\n💸 Fee: `{execution.get('fee_paid', 0):.4f} USDT`")
-
-    def notify_sell(self, execution: dict) -> None:
-        self.send(f"🔴 *VENTA REALIZADA*\n━━━━━━━━━━━━━━━━━━\n₿  BTC: `{execution.get('quantity', 0):.8f}`\n💵 Recibido: `{execution.get('quote_amount', 0):.2f} USDT`\n📉 Precio: `${execution.get('price', 0):,.2f}`\n💸 Fee: `{execution.get('fee_paid', 0):.4f} USDT`")
-
-    def notify_buy(self, execution: dict, level: int) -> None:
         quote = _dec(execution.get("quote_amount", 0))
         qty = _dec(execution.get("quantity", 0))
         price = _dec(execution.get("price", 0))
         fee = _dec(execution.get("fee_in_usdt", execution.get("fee_paid", 0)))
-        self.send(f"ðŸŸ¢ *COMPRA REALIZADA*\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ“ Nivel: `{level}`\nðŸ’° USDT: `{quote:.2f}`\nâ‚¿  BTC: `{qty:.8f}`\nðŸ“ˆ Precio: `${price:,.2f}`\nðŸ’¸ Fee: `{fee:.4f} USDT`")
+        self.send(f"🟢 *COMPRA REALIZADA*\n━━━━━━━━━━━━━━━━━━\n📍 Nivel: `{level}`\n💰 USDT: `{float(quote):.2f}`\n₿  BTC: `{float(qty):.8f}`\n📈 Precio: `${float(price):,.2f}`\n💸 Fee: `{float(fee):.4f} USDT`")
 
     def notify_sell(self, execution: dict) -> None:
         quote = _dec(execution.get("quote_amount", 0))
         qty = _dec(execution.get("quantity", 0))
         price = _dec(execution.get("price", 0))
         fee = _dec(execution.get("fee_in_usdt", execution.get("fee_paid", 0)))
-        self.send(f"ðŸ”´ *VENTA REALIZADA*\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nâ‚¿  BTC: `{qty:.8f}`\nðŸ’µ Recibido: `{quote:.2f} USDT`\nðŸ“‰ Precio: `${price:,.2f}`\nðŸ’¸ Fee: `{fee:.4f} USDT`")
+        self.send(f"🔴 *VENTA REALIZADA*\n━━━━━━━━━━━━━━━━━━\n₿  BTC: `{float(qty):.8f}`\n💵 Recibido: `{float(quote):.2f} USDT`\n📉 Precio: `${float(price):,.2f}`\n💸 Fee: `{float(fee):.4f} USDT`")
 
     def notify_safe_mode(self, reason: str) -> None:
         self.send(f"🚨 *MODO SEGURO ACTIVADO*\n━━━━━━━━━━━━━━━━━━\n⚠️ Razón: `{reason}`")
