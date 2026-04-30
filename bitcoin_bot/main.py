@@ -37,8 +37,18 @@ def setup_logging() -> None:
 def build_market_client():
     if Config.TRADING_MODE == "live":
         return BinanceClient()
-    # Paper mode por defecto NO intenta conectar a Binance real en el constructor
-    return PaperBinanceClient()
+    
+    # Paper mode: Si hay API keys, conectamos a Binance en modo lectura
+    # para leer precios, RSI y balances reales (pero sin ejecutar órdenes)
+    live_reader = None
+    if Config.BINANCE_API_KEY and Config.BINANCE_SECRET_KEY:
+        try:
+            live_reader = BinanceClient()
+            logging.getLogger(__name__).info("📡 Modo PAPER LIVE: Conectado a Binance para lectura de datos reales")
+        except Exception as exc:
+            logging.getLogger(__name__).warning("No se pudo conectar a Binance para lectura. Usando datos offline: %s", exc)
+    
+    return PaperBinanceClient(live_reader=live_reader)
 
 def build_engine(market_client):
     db_manager = DBManager(Config.DB_FILE)
