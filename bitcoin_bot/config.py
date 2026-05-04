@@ -15,10 +15,11 @@ class Config:
     QUOTE_ASSET = "USDT"
     PRICE_INTERVAL_SECONDS = 15
     
-    # Configuracion de Volatilidad (Decimal)
-    BASE_SELL_THRESHOLD_PCT = Decimal(os.getenv("BOT_MIN_SELL_THRESHOLD_PCT", "0.015"))
-    BASE_BUY_LEVEL_1_PCT = Decimal(os.getenv("BOT_BUY_LEVEL_1_PCT", "0.020"))
-    BASE_BUY_LEVEL_2_PCT = Decimal(os.getenv("BOT_BUY_LEVEL_2_PCT", "0.040"))
+    # Scalper Activo: Compra en caidas de precio, vende en subidas pequeñas
+    # Fee roundtrip = 0.2% -> umbral de venta 0.6% garantiza 0.4% neto minimo
+    BASE_SELL_THRESHOLD_PCT = Decimal(os.getenv("BOT_MIN_SELL_THRESHOLD_PCT", "0.006"))  # 0.6% sobre costo
+    BASE_BUY_LEVEL_1_PCT = Decimal(os.getenv("BOT_BUY_LEVEL_1_PCT", "0.010"))           # 1.0% caida desde pico
+    BASE_BUY_LEVEL_2_PCT = Decimal(os.getenv("BOT_BUY_LEVEL_2_PCT", "0.020"))           # 2.0% caida adicional (DCA)
     
     ATR_MULTIPLIER_SELL = Decimal("0.5")
     ATR_MULTIPLIER_BUY_1 = Decimal("0.8")
@@ -26,15 +27,15 @@ class Config:
     
     KLINES_INTERVAL = "15m"
     RSI_PERIOD = 14
-    RSI_OVERSOLD = 30
-    RSI_OVERBOUGHT = 70
+    RSI_OVERSOLD = 55    # Filtro: solo comprar si RSI < 55 (no comprar en momentum alcista)
+    RSI_OVERBOUGHT = 65  # Vender si RSI >= 65 (señal de sobrecompra)
 
     PROFIT_SPLIT_USDT_PCT = Decimal("0.50")
 
     # Risk Management
     STOP_LOSS_ATR_MULTIPLIER = Decimal(os.getenv("BOT_STOP_LOSS_ATR_MULT", "1.5"))
     RISK_PER_TRADE_PCT = Decimal(os.getenv("BOT_RISK_PER_TRADE_PCT", "0.015"))
-    TRAILING_STOP_PCT = Decimal(os.getenv("BOT_TRAILING_STOP_PCT", "0.005"))
+    TRAILING_STOP_PCT = Decimal(os.getenv("BOT_TRAILING_STOP_PCT", "0.004"))  # 0.4% trailing mas agresivo
 
     BUY_LEVEL_1_USDT_PCT = Decimal("0.60")
     BUY_LEVEL_2_USDT_PCT = Decimal("0.40")
@@ -44,7 +45,7 @@ class Config:
     MIN_USDT_TO_OPERATE = Decimal("1.50")
     MIN_BTC_TO_SELL = Decimal("0.00001")
     
-    COOLDOWN_MINUTES = 10
+    COOLDOWN_MINUTES = 5  # 5 min entre operaciones para scalper activo
     BULL_PROTECTION_DAYS = 3
     BULL_REDUCED_BUY_PCT = Decimal("0.01")
     BULL_FORCE_BUY_DAYS = 5
