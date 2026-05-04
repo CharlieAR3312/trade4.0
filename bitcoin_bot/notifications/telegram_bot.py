@@ -101,9 +101,14 @@ class TelegramNotifier:
         snap = self.market_client.get_portfolio_snapshot(Config.SYMBOL) if self.market_client else {}
         engine_status = self.engine_state.status.value if self.engine_state else "UNKNOWN"
         
-        # RSI might be hard to get if we don't have reference to volatility engine.
-        # Wait, the notifier receives the engines in main.py? Let's check init.
-        # It doesn't receive volatility_engine. I will try to fetch it if passed, or just ignore for now.
+        # Calcular Targets
+        peak = self.price_engine.peak_price if self.price_engine and self.price_engine.peak_price else 0
+        valley = getattr(self.price_engine, 'valley_price', None) if self.price_engine else 0
+        
+        next_buy_drop = float(peak) * (1 - float(Config.BASE_BUY_LEVEL_1_PCT)) if peak else 0
+        next_buy_momentum = float(valley) * (1 + float(getattr(Config, 'MOMENTUM_BUY_PCT', 0.01))) if valley else 0
+        next_sell = float(avg_price) * (1 + float(Config.BASE_SELL_THRESHOLD_PCT)) if avg_price else 0
+        
         return {
             "state": self.state_machine.state.value if self.state_machine else "DESCONOCIDO", 
             "engine": engine_status, 
@@ -114,19 +119,32 @@ class TelegramNotifier:
             "btc": snap.get("btc_balance", 0), 
             "usdt": snap.get("usdt_balance", 0), 
             "total": snap.get("total_usdt", 0), 
-            "mode": Config.TRADING_MODE
+            "mode": Config.TRADING_MODE,
+            "next_buy_drop": next_buy_drop,
+            "next_buy_momentum": next_buy_momentum,
+            "next_sell": next_sell
         }
 
     def _build_status_msg(self, data: Dict[str, Any], title: str = "📊 *STATUS*") -> str:
         avg_str = f"${float(data['avg_price']):,.2f}" if data['avg_price'] > 0 else "N/A"
         change_str = f"{float(data['change']):+.2f}%" if data['avg_price'] > 0 else "0.00%"
         
+        targets_str = ""
+        if data['state'] == "EN_BAJADA" or data['state'] == "NEUTRO":
+            nbd = f"${data['next_buy_drop']:,.2f}" if data['next_buy_drop'] > 0 else "N/A"
+            nbm = f"${data['next_buy_momentum']:,.2f}" if data['next_buy_momentum'] > 0 else "N/A"
+            targets_str = f"📉 Próxima Compra (Caída): `{nbd}`\n📈 Compra en Subida (FOMO): `{nbm}`"
+        else:
+            ns = f"${data['next_sell']:,.2f}" if data['next_sell'] > 0 else "N/A"
+            targets_str = f"🎯 Próxima Venta Target: `{ns}`"
+            
         return (f"{title} | `{datetime.now().strftime('%H:%M:%S')}`\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🚀 Motor: `{data['engine']}`\n"
             f"🤖 Modo: `{data['mode']}`\n"
             f"🔄 Estado: `{data['state']}`\n\n"
-            f"💰 Precio: `${float(data['price']):,.2f}`\n"
+            f"💰 Precio Actual: `${float(data['price']):,.2f}`\n"
+            f"{targets_str}\n\n"
             f"⚖️ Costo Promedio (Break Even): `{avg_str}`\n"
             f"{data['trend_emoji']} Profit Real: `{change_str}`\n"
             f"━━━━━━━━━━━━━━━━━━\n"

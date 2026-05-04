@@ -13,6 +13,7 @@ class PriceEngine:
         self.engine_state = engine_state
         self.current_price: Decimal | None = None
         self.peak_price: Decimal | None = None
+        self.valley_price: Decimal | None = None
         self.last_updated: float | None = None
         self.price_history: list[dict] = []
         self.error_count = 0
@@ -31,6 +32,8 @@ class PriceEngine:
             
             if self.peak_price is None or price > self.peak_price:
                 self.peak_price = price
+            if self.valley_price is None or price < self.valley_price:
+                self.valley_price = price
             
             self.price_history.append({
                 "price": str(price), 
@@ -41,7 +44,7 @@ class PriceEngine:
             if len(self.price_history) > 200:
                 self.price_history.pop(0)
             
-            logger.info("BTC/USDT %.2f | Pico %.2f", float(price), float(self.peak_price))
+            logger.info("BTC/USDT %.2f | Pico %.2f | Valle %.2f", float(price), float(self.peak_price), float(self.valley_price))
             return price
         except Exception as exc:
             self.error_count += 1
@@ -59,6 +62,15 @@ class PriceEngine:
         if self.peak_price is not None:
             logger.info("Pico reseteado a %.2f", float(self.peak_price))
 
+    def reset_valley(self, new_valley: Decimal | float | None = None) -> None:
+        if new_valley is not None:
+            self.valley_price = Decimal(str(new_valley))
+        else:
+            self.valley_price = self.current_price
+            
+        if self.valley_price is not None:
+            logger.info("Valle reseteado a %.2f", float(self.valley_price))
+
     def is_fresh(self) -> bool:
         return self.last_updated is not None and (time.time() - self.last_updated) < (Config.PRICE_INTERVAL_SECONDS + 5)
 
@@ -72,6 +84,11 @@ class PriceEngine:
         if self.current_price is None or self.peak_price in (None, 0):
             return Decimal("0.0")
         return (self.current_price - self.peak_price) / self.peak_price
+
+    def get_rise_from_valley(self) -> Decimal:
+        if self.current_price is None or self.valley_price in (None, 0):
+            return Decimal("0.0")
+        return (self.current_price - self.valley_price) / self.valley_price
 
     def run_loop(self, callback) -> None:
         logger.info("Motor de precios iniciado con intervalo de %ss", Config.PRICE_INTERVAL_SECONDS)

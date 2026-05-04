@@ -52,12 +52,14 @@ class DecisionEngine:
         current_rsi = self.volatility_engine.current_rsi
         current_atr = getattr(self.volatility_engine, "current_atr", Decimal("0.0")) or Decimal("0.0")
 
-        # Peak tracking: siempre actualiza hacia arriba.
-        # Se resetea al precio de ejecucion cuando se compra o vende.
+        # Trailing trackers
         if price_engine.peak_price is None or current_price > price_engine.peak_price:
             price_engine.reset_peak(current_price)
+        if price_engine.valley_price is None or current_price < price_engine.valley_price:
+            price_engine.reset_valley(current_price)
 
         drop_from_peak = abs(price_engine.get_drop_from_peak())
+        rise_from_valley = abs(price_engine.get_rise_from_valley())
 
         # Trailing stop: solo aplica cuando tenemos posicion y hay ganancia
         trailing_triggered = (
@@ -72,7 +74,7 @@ class DecisionEngine:
         logger.info(
             f"Precio: {current_price:.2f} | Avg: {avg_price:.2f} | "
             f"Profit: {profit_margin*100:.3f}% | RSI: {current_rsi:.1f} | "
-            f"Caida: {drop_from_peak*100:.2f}% | Estado: {self.state_machine.state.value}"
+            f"Caida: {drop_from_peak*100:.2f}% | Subida: {rise_from_valley*100:.2f}% | Estado: {self.state_machine.state.value}"
         )
 
         # Stop Loss Dinamico (ATR) - limites entre 0.5% y 3%
@@ -102,14 +104,17 @@ class DecisionEngine:
             if is_profitable_enough and (current_rsi >= rsi_overbought or trailing_triggered):
                 self._handle_sell_path(snapshot, False)
 
-        # CONDICIONES DE COMPRA (Scalper por caida de precio desde pico)
-        # Nivel 1: precio cae >= 1.0% desde el pico Y RSI < 55 (no comprar en rally)
-        if (not self.state_machine.buy_level_1_done
-                and drop_from_peak >= Config.BASE_BUY_LEVEL_1_PCT
-                and current_rsi < rsi_buy_filter):
+        # CONDICIONES DE COMPRA (Scalper Agresivo)
+        # Nivel 1:
+        # A) Compra en Micro-Caída: cae >= 0.6% desde el pico Y RSI < 55
+        # B) Compra por Momentum (Breakout): sube >= 1.0% desde el valle
+        condicion_caida = (drop_from_peak >= Config.BASE_BUY_LEVEL_1_PCT and current_rsi < rsi_buy_filter)
+        condicion_momentum = (rise_from_valley >= getattr(Config, 'MOMENTUM_BUY_PCT', Decimal("0.01")))
+        
+        if not self.state_machine.buy_level_1_done and (condicion_caida or condicion_momentum):
             self._execute_buy_level(1, snapshot["usdt_balance"], stop_loss_pct)
 
-        # Nivel 2 DCA: caida total >= 3.0% (1.0 nivel1 + 2.0 adicional) Y RSI < 50
+        # Nivel 2 DCA: caida total >= Nivel 1 + Nivel 2
         elif (self.state_machine.buy_level_1_done
                 and not self.state_machine.buy_level_2_done
                 and drop_from_peak >= Config.BASE_BUY_LEVEL_1_PCT + Config.BASE_BUY_LEVEL_2_PCT
@@ -181,6 +186,7 @@ class DecisionEngine:
 
         self.base_calculator.update(execution.avg_price, "post_sell")
         self.price_engine.reset_peak(execution.avg_price)
+        self.price_engine.reset_valley(execution.avg_price)
 
     def _execute_buy_level(self, level: int, usdt_balance: Decimal, stop_loss_pct: Decimal) -> None:
         if self.state_machine.state != BotState.EN_BAJADA:
@@ -226,6 +232,7 @@ class DecisionEngine:
             return
         self.state_machine.register_usdt_spent()
         self.price_engine.reset_peak(execution.avg_price)
+        self.price_engine.reset_valley(execution.avg_price)
 
     def _persist(self) -> None:
         self.state_store.save({

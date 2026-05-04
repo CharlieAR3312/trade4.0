@@ -15,11 +15,12 @@ class Config:
     QUOTE_ASSET = "USDT"
     PRICE_INTERVAL_SECONDS = 15
     
-    # Scalper Activo: Compra en caidas de precio, vende en subidas pequeñas
-    # Fee roundtrip = 0.2% -> umbral de venta 0.6% garantiza 0.4% neto minimo
-    BASE_SELL_THRESHOLD_PCT = Decimal(os.getenv("BOT_MIN_SELL_THRESHOLD_PCT", "0.006"))  # 0.6% sobre costo
-    BASE_BUY_LEVEL_1_PCT = Decimal(os.getenv("BOT_BUY_LEVEL_1_PCT", "0.010"))           # 1.0% caida desde pico
-    BASE_BUY_LEVEL_2_PCT = Decimal(os.getenv("BOT_BUY_LEVEL_2_PCT", "0.020"))           # 2.0% caida adicional (DCA)
+    # Scalper Agresivo: Compra en micro-caídas o breakouts (subidas continuas)
+    # Fee roundtrip = 0.2% -> umbral de venta 0.5% garantiza 0.3% neto minimo
+    BASE_SELL_THRESHOLD_PCT = Decimal(os.getenv("BOT_MIN_SELL_THRESHOLD_PCT", "0.005"))  # 0.5% sobre costo
+    BASE_BUY_LEVEL_1_PCT = Decimal(os.getenv("BOT_BUY_LEVEL_1_PCT", "0.006"))           # 0.6% caida desde pico
+    MOMENTUM_BUY_PCT = Decimal(os.getenv("BOT_MOMENTUM_BUY_PCT", "0.010"))              # 1.0% subida continua (breakout)
+    BASE_BUY_LEVEL_2_PCT = Decimal(os.getenv("BOT_BUY_LEVEL_2_PCT", "0.015"))           # 1.5% caida adicional (DCA)
     
     ATR_MULTIPLIER_SELL = Decimal("0.5")
     ATR_MULTIPLIER_BUY_1 = Decimal("0.8")
