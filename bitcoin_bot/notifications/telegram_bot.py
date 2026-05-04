@@ -130,7 +130,7 @@ class TelegramNotifier:
         change_str = f"{float(data['change']):+.2f}%" if data['avg_price'] > 0 else "0.00%"
         
         targets_str = ""
-        if data['state'] == "EN_BAJADA" or data['state'] == "NEUTRO":
+        if data['state'] in ["EN_BAJADA", "NEUTRO"] or (data['state'] == "MODO_SEGURO" and data['avg_price'] == 0):
             nbd = f"${data['next_buy_drop']:,.2f}" if data['next_buy_drop'] > 0 else "N/A"
             nbm = f"${data['next_buy_momentum']:,.2f}" if data['next_buy_momentum'] > 0 else "N/A"
             targets_str = f"📉 Próxima Compra (Caída): `{nbd}`\n📈 Compra en Subida (FOMO): `{nbm}`"
@@ -173,7 +173,13 @@ class TelegramNotifier:
     async def _cmd_resume(self, update: Update):
         if self.engine_state:
             self.engine_state.resume()
-            await update.message.reply_text("▶️ *Motor Reanudado.* Bot operando normalmente.", parse_mode=ParseMode.MARKDOWN)
+        if self.state_machine:
+            from bitcoin_bot.core.state_machine import BotState
+            if self.state_machine.state.value == "MODO_SEGURO":
+                # Recalibrar la contabilidad con los fondos actuales
+                self.state_machine.baseline_btc = None
+                self.state_machine.transition(BotState.NEUTRO, "Modo seguro desactivado por usuario. Recalibrando balances.")
+        await update.message.reply_text("▶️ *Motor Reanudado.* Bot operando normalmente y balances sincronizados.", parse_mode=ParseMode.MARKDOWN)
 
     async def _menu_config(self, update: Update):
         keyboard = [[InlineKeyboardButton("🛡️ Modo Seguro", callback_data="set_mode_safe"), InlineKeyboardButton("🚀 Modo Normal", callback_data="set_mode_normal")]]
