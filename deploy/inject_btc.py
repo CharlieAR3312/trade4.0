@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 def inject_btc():
     logger.info("Iniciando inyeccion de 50% BTC...")
     
-    db_path = "/opt/bitcoin-bot/data/bot.db"
+    db_path = "/opt/bitcoin-bot/data/bot_database.sqlite"
     if not os.path.exists(db_path):
         logger.error(f"No se encontro {db_path}. El bot debe ejecutarse al menos una vez antes de inyectar.")
         return
