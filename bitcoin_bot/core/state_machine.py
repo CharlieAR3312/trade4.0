@@ -94,13 +94,17 @@ class StateMachine:
         btc_sold = Decimal(str(btc_sold))
         quote_received = Decimal(str(quote_received))
         
-        if full_sell or btc_sold >= self.active_btc * Decimal("0.99"):
+        if full_sell:
             # Venta de salida o Stop Loss
+            self.active_btc -= btc_sold
+            if self.active_btc > 0:
+                self.accumulated_btc += self.active_btc
+                
             self.buy_level_1_done = False
             self.buy_level_2_done = False
             self.active_cost_usdt = Decimal("0.0")
             self.active_btc = Decimal("0.0")
-            logger.info("Posicion activa CERRADA.")
+            logger.info("Posicion activa CERRADA. Dust movido a acumulado.")
         else:
             # Venta parcial (Profit Split)
             # Primero recuperamos capital
