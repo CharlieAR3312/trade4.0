@@ -33,14 +33,14 @@ class Config:
 
     PROFIT_SPLIT_USDT_PCT = Decimal("0.50")
 
-    # Risk Management
+    # Risk Management - 100% All-in
     STOP_LOSS_ATR_MULTIPLIER = Decimal(os.getenv("BOT_STOP_LOSS_ATR_MULT", "1.5"))
-    RISK_PER_TRADE_PCT = Decimal(os.getenv("BOT_RISK_PER_TRADE_PCT", "0.015"))
+    RISK_PER_TRADE_PCT = Decimal("1.0")
     TRAILING_STOP_PCT = Decimal(os.getenv("BOT_TRAILING_STOP_PCT", "0.004"))  # 0.4% trailing mas agresivo
 
-    BUY_LEVEL_1_USDT_PCT = Decimal("0.60")
-    BUY_LEVEL_2_USDT_PCT = Decimal("0.40")
-    MAX_SELL_PCT_PER_CYCLE = Decimal("0.15")
+    BUY_LEVEL_1_USDT_PCT = Decimal("1.0")
+    BUY_LEVEL_2_USDT_PCT = Decimal("0.0")
+    MAX_SELL_PCT_PER_CYCLE = Decimal("1.0")
     BINANCE_FEE_PCT = Decimal("0.001")
     MIN_NET_GAIN_RATIO = Decimal("0.30")
     MIN_USDT_TO_OPERATE = Decimal("1.50")
