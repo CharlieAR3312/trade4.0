@@ -96,26 +96,28 @@ class DecisionEngine:
             self._persist()
             return
 
-        # CONDICIONES DE VENTA
-        # Ganancia >= 0.6% sobre costo (garantiza ~0.4% neto tras fees de 0.2% roundtrip)
-        # + RSI en zona de sobrecompra O trailing stop activo
+        # ─── CONDICIONES DE VENTA ────────────────────────────────────────────
+        # Vende cuando haya ganancia suficiente (>= 0.5% sobre costo).
+        # El RSI alto o trailing stop son señales ADICIONALES que lo aceleran,
+        # pero NO son requisito obligatorio para vender.
         if has_position:
             is_profitable_enough = profit_margin >= Config.BASE_SELL_THRESHOLD_PCT
-            if is_profitable_enough and (current_rsi >= rsi_overbought or trailing_triggered):
+            rsi_confirms_sell = current_rsi >= rsi_overbought
+            if is_profitable_enough or (has_position and trailing_triggered) or (is_profitable_enough and rsi_confirms_sell):
                 self._handle_sell_path(snapshot, False)
 
-        # CONDICIONES DE COMPRA (Scalper Agresivo)
-        # Nivel 1:
-        # A) Compra en Micro-Caída: cae >= 0.6% desde el pico Y RSI < 55
-        # B) Compra por Momentum (Breakout): sube >= 1.0% desde el valle
+        # ─── CONDICIONES DE COMPRA (Scalper Agresivo) ───────────────────────
+        # Compra cuando NO haya posicion abierta.
+        # A) Micro-Caída: cae >= 0.6% desde pico Y RSI < 55
+        # B) Momentum Breakout: sube >= 1.0% desde el valle (sin filtro RSI)
         condicion_caida = (drop_from_peak >= Config.BASE_BUY_LEVEL_1_PCT and current_rsi < rsi_buy_filter)
         condicion_momentum = (rise_from_valley >= getattr(Config, 'MOMENTUM_BUY_PCT', Decimal("0.01")))
-        
-        if not self.state_machine.buy_level_1_done and (condicion_caida or condicion_momentum):
+
+        if not has_position and (condicion_caida or condicion_momentum):
             self._execute_buy_level(1, snapshot["usdt_balance"], stop_loss_pct)
 
-        # Nivel 2 DCA: caida total >= Nivel 1 + Nivel 2
-        elif (self.state_machine.buy_level_1_done
+        # DCA Nivel 2: solo si ya se compró nivel 1 y el precio sigue cayendo
+        elif (has_position
                 and not self.state_machine.buy_level_2_done
                 and drop_from_peak >= Config.BASE_BUY_LEVEL_1_PCT + Config.BASE_BUY_LEVEL_2_PCT
                 and current_rsi < Decimal("50")):
