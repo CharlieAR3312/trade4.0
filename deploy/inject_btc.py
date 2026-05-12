@@ -36,8 +36,8 @@ def inject_btc():
         baseline = Decimal("0.00328921")
         logger.info(f"Usando fallback balance: {baseline}")
         
-    injection_amount = baseline / Decimal("2.0")
-    logger.info(f"Monto a inyectar (50%): {injection_amount:.8f} BTC")
+    injection_amount = baseline # 100% del balance
+    logger.info(f"Monto a inyectar (100%): {injection_amount:.8f} BTC")
     
     last_price = Decimal(data.get("last_price", "80000.0"))
     if last_price <= 0: last_price = Decimal("80000.0")
