@@ -43,6 +43,23 @@ class DecisionEngine:
 
         self.base_calculator.initialize(current_price)
 
+        # ─── AUTO-LIMPIEZA DE DUST (POLVO) ──────────────────────────────────
+        # Si la posición activa quedó con un rastro microscópico imposible de vender
+        if self.state_machine.active_btc > 0:
+            is_dust_btc = self.state_machine.active_btc < Config.MIN_BTC_TO_SELL
+            is_dust_usdt = self.state_machine.active_cost_usdt < Config.MIN_USDT_TO_OPERATE
+            if is_dust_btc or is_dust_usdt:
+                logger.warning(f"Limpiando dust residual: {self.state_machine.active_btc} BTC / {self.state_machine.active_cost_usdt} USDT")
+                self.state_machine.accumulated_btc += self.state_machine.active_btc
+                self.state_machine.active_btc = Decimal("0.0")
+                self.state_machine.active_cost_usdt = Decimal("0.0")
+                self.state_machine.buy_level_1_done = False
+                self.state_machine.buy_level_2_done = False
+                if self.state_machine.state == BotState.EN_SUBIDA:
+                    self.state_machine.transition(BotState.NEUTRO, "Dust limpiado, volviendo a NEUTRO")
+                self._persist()
+                return
+
         has_position = self.state_machine.active_btc > 0
         avg_price = self.state_machine.average_buy_price
         profit_margin = Decimal("0.0")
