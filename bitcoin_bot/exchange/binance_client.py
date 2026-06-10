@@ -51,10 +51,12 @@ class BinanceClient:
     def get_balance(self, asset: str) -> Decimal:
         try:
             balance = self.client.get_asset_balance(asset=asset)
-            return Decimal(balance["free"]) if balance else Decimal("0.0")
+            if balance is None:
+                raise RuntimeError(f"No se recibio informacion de saldo para el activo {asset}")
+            return Decimal(balance["free"])
         except Exception as exc:
             logger.error("Error obteniendo saldo %s: %s", asset, exc)
-            return Decimal("0.0")
+            raise
 
     def get_portfolio_snapshot(self, symbol: str) -> dict | None:
         btc_balance = self.get_balance("BTC")

@@ -61,6 +61,24 @@ def build_engine(market_client):
     state_machine = StateMachine.from_dict(persisted.get("state_machine"))
     base_calculator = BaseCalculator.from_dict(persisted.get("base"))
     
+    # Sincronizar balances virtuales en modo Paper Trading si la API no proporciono balances reales
+    from bitcoin_bot.simulation.paper_trading import PaperBinanceClient
+    if isinstance(market_client, PaperBinanceClient):
+        # Si fallaron las llaves API de Binance (balances en 0) o no hay live_reader,
+        # sincronizamos el simulador con lo registrado internamente en base de datos.
+        if not market_client._live or market_client.balances.get("BTC", Decimal("0")) == Decimal("0"):
+            total_btc = state_machine.active_btc + state_machine.accumulated_btc
+            market_client.balances["BTC"] = total_btc
+            
+            # Asignar un balance virtual de USDT para operar
+            if market_client.balances.get("USDT", Decimal("0")) == Decimal("0"):
+                market_client.balances["USDT"] = Decimal("1000.0") if total_btc == 0 else Decimal("50.0")
+            
+            logging.getLogger(__name__).info(
+                "⚙️ BALANCES SIMULADOS SINCRONIZADOS (Fallback por error de API Key) -> %.8f BTC | %.2f USDT",
+                float(market_client.balances["BTC"]), float(market_client.balances["USDT"])
+            )
+    
     price_engine = PriceEngine(market_client, engine_state)
     peak = persisted.get("peak_price")
     if peak:
