@@ -46,7 +46,16 @@ class Config:
     MIN_USDT_TO_OPERATE = Decimal("1.50")
     MIN_BTC_TO_SELL = Decimal("0.00001")
     
-    COOLDOWN_MINUTES = 5  # 5 min entre operaciones para scalper activo
+    # ─── PARAMETROS DE VENTA DEFENSIVA (Protección de capital en caídas) ───
+    # Si el precio cae >= este % desde el pico Y el RSI indica fuerza bajista → vender todo el BTC
+    DEFENSIVE_SELL_THRESHOLD_PCT = Decimal(os.getenv("BOT_DEFENSIVE_SELL_PCT", "0.012"))  # 1.2% caida desde pico
+    DEFENSIVE_RSI_MAX = int(os.getenv("BOT_DEFENSIVE_RSI_MAX", "52"))         # Solo vende defensivamente si RSI > 52 (aún no sobreventa)
+
+    # ─── PARAMETROS DE RECOMPRA INTELIGENTE ─────────────────────────────────
+    # Recompra cuando el precio rebota desde el fondo Y el RSI confirma recuperación
+    REENTRY_RISE_PCT = Decimal(os.getenv("BOT_REENTRY_RISE_PCT", "0.010"))    # Sube >= 1.0% desde el valle
+    REENTRY_RSI_MIN = int(os.getenv("BOT_REENTRY_RSI_MIN", "32"))             # RSI > 32 (confirmación de salida de sobreventa)
+    
     BULL_PROTECTION_DAYS = 3
     BULL_REDUCED_BUY_PCT = Decimal("0.01")
     BULL_FORCE_BUY_DAYS = 5

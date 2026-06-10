@@ -15,6 +15,7 @@ class BotState(Enum):
     EN_BAJADA = "EN_BAJADA"
     ENFRIANDO = "ENFRIANDO"
     MODO_SEGURO = "MODO_SEGURO"
+    VENDIDO = "VENDIDO"  # Vendió defensivamente, esperando recompra en el fondo
 
 @dataclass
 class StateSnapshot:
@@ -30,6 +31,7 @@ class StateSnapshot:
     active_btc: str = "0.0"
     accumulated_btc: str = "0.0"
     baseline_btc: str | None = None  # Balance inicial de la cuenta para reconciliacion relativa
+    defensive_sell_price: str | None = None  # Precio al que se hizo la venta defensiva
 
 class StateMachine:
     def __init__(self):
@@ -45,6 +47,7 @@ class StateMachine:
         self.active_btc = Decimal("0.0")
         self.accumulated_btc = Decimal("0.0")
         self.baseline_btc: Decimal | None = None
+        self.defensive_sell_price: Decimal | None = None  # Precio al que vendimos para proteger capital
         
         self.history: list[dict] = []
 
@@ -183,7 +186,8 @@ class StateMachine:
             active_cost_usdt=str(self.active_cost_usdt),
             active_btc=str(self.active_btc),
             accumulated_btc=str(self.accumulated_btc),
-            baseline_btc=str(self.baseline_btc) if self.baseline_btc is not None else None
+            baseline_btc=str(self.baseline_btc) if self.baseline_btc is not None else None,
+            defensive_sell_price=str(self.defensive_sell_price) if self.defensive_sell_price is not None else None
         )
         payload = asdict(snap)
         payload["history"] = self.history
@@ -209,4 +213,6 @@ class StateMachine:
         machine.baseline_btc = Decimal(base) if base is not None else None
         
         machine.history = list(payload.get("history", []))
+        dsp = payload.get("defensive_sell_price")
+        machine.defensive_sell_price = Decimal(dsp) if dsp else None
         return machine

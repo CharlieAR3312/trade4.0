@@ -43,24 +43,24 @@ class DecisionEngine:
 
         self.base_calculator.initialize(current_price)
 
-        # ─── AUTO-LIMPIEZA DE DUST (POLVO) ──────────────────────────────────
-        # Si la posición activa quedó con un rastro microscópico imposible de vender
+        # ─── AUTO-LIMPIEZA DE DUST ───────────────────────────────────────────
         if self.state_machine.active_btc > 0:
             is_dust_btc = self.state_machine.active_btc < Config.MIN_BTC_TO_SELL
             is_dust_usdt = self.state_machine.active_cost_usdt < Config.MIN_USDT_TO_OPERATE
             if is_dust_btc or is_dust_usdt:
-                logger.warning(f"Limpiando dust residual: {self.state_machine.active_btc} BTC / {self.state_machine.active_cost_usdt} USDT")
+                logger.warning(f"Limpiando dust residual: {self.state_machine.active_btc} BTC")
                 self.state_machine.accumulated_btc += self.state_machine.active_btc
                 self.state_machine.active_btc = Decimal("0.0")
                 self.state_machine.active_cost_usdt = Decimal("0.0")
                 self.state_machine.buy_level_1_done = False
                 self.state_machine.buy_level_2_done = False
-                if self.state_machine.state == BotState.EN_SUBIDA:
-                    self.state_machine.transition(BotState.NEUTRO, "Dust limpiado, volviendo a NEUTRO")
+                if self.state_machine.state not in (BotState.VENDIDO,):
+                    self.state_machine.transition(BotState.NEUTRO, "Dust limpiado")
                 self._persist()
                 return
 
         has_position = self.state_machine.active_btc > 0
+        usdt_balance = snapshot["usdt_balance"]
         avg_price = self.state_machine.average_buy_price
         profit_margin = Decimal("0.0")
         if avg_price > 0:
@@ -78,34 +78,28 @@ class DecisionEngine:
         drop_from_peak = abs(price_engine.get_drop_from_peak())
         rise_from_valley = abs(price_engine.get_rise_from_valley())
 
-        # Trailing stop: solo aplica cuando tenemos posicion y hay ganancia
         trailing_triggered = (
             has_position
             and drop_from_peak >= Config.TRAILING_STOP_PCT
             and profit_margin > 0
         )
 
-        rsi_buy_filter = Decimal(str(Config.RSI_OVERSOLD))   # comprar solo si RSI < este valor
-        rsi_overbought = Decimal(str(Config.RSI_OVERBOUGHT))  # vender si RSI >= este valor
-
         logger.info(
-            f"Precio: {current_price:.2f} | Avg: {avg_price:.2f} | "
-            f"Profit: {profit_margin*100:.3f}% | RSI: {current_rsi:.1f} | "
-            f"Caida: {drop_from_peak*100:.2f}% | Subida: {rise_from_valley*100:.2f}% | Estado: {self.state_machine.state.value}"
+            f"Precio: {current_price:.2f} | RSI: {current_rsi:.1f} | "
+            f"Caida: {drop_from_peak*100:.2f}% | Subida: {rise_from_valley*100:.2f}% | "
+            f"Profit: {profit_margin*100:.3f}% | Estado: {self.state_machine.state.value} | "
+            f"BTC: {self.state_machine.active_btc:.6f} | USDT: {usdt_balance:.2f}"
         )
 
-        # Stop Loss Dinamico (ATR) - limites entre 0.5% y 3%
+        # ─── STOP LOSS DINAMICO (ATR) ────────────────────────────────────────
         stop_loss_pct = Decimal("0.02")
         if current_atr > 0:
             stop_loss_pct = (current_atr * Config.STOP_LOSS_ATR_MULTIPLIER) / current_price
         stop_loss_pct = max(Decimal("0.005"), min(Decimal("0.03"), stop_loss_pct))
 
-        # Stop Loss nunca bloqueado por cooldown
         if has_position and profit_margin <= -stop_loss_pct:
-            logger.warning(
-                f"STOP LOSS: perdida {profit_margin*100:.2f}% supero limite {stop_loss_pct*100:.2f}%"
-            )
-            self._handle_sell_path(snapshot, True)
+            logger.warning(f"STOP LOSS: {profit_margin*100:.2f}% | Limite: {stop_loss_pct*100:.2f}%")
+            self._handle_sell_path(snapshot, is_stop_loss=True)
             self._persist()
             return
 
@@ -113,34 +107,121 @@ class DecisionEngine:
             self._persist()
             return
 
-        # ─── CONDICIONES DE VENTA ────────────────────────────────────────────
-        # Vende cuando haya ganancia suficiente (>= 0.5% sobre costo).
-        # El RSI alto o trailing stop son señales ADICIONALES que lo aceleran,
-        # pero NO son requisito obligatorio para vender.
+        # ═══════════════════════════════════════════════════════════════════
+        # CEREBRO DE TRADING v2.5
+        # Tres modos: A) BTC en mano, B) VENDIDO esperando fondo, C) NEUTRO
+        # ═══════════════════════════════════════════════════════════════════
+
+        # ─── MODO A: Tengo BTC — vender con profit O vender defensivamente ───
         if has_position:
-            is_profitable_enough = profit_margin >= Config.BASE_SELL_THRESHOLD_PCT
-            rsi_confirms_sell = current_rsi >= rsi_overbought
-            if is_profitable_enough or (has_position and trailing_triggered) or (is_profitable_enough and rsi_confirms_sell):
-                self._handle_sell_path(snapshot, False)
+            is_profitable = profit_margin >= Config.BASE_SELL_THRESHOLD_PCT
+            rsi_overbought = current_rsi >= Config.RSI_OVERBOUGHT
 
-        # ─── CONDICIONES DE COMPRA (Scalper Agresivo) ───────────────────────
-        # Compra cuando NO haya posicion abierta.
-        # A) Micro-Caída: cae >= 0.6% desde pico Y RSI < 55
-        # B) Momentum Breakout: sube >= 1.0% desde el valle (sin filtro RSI)
-        condicion_caida = (drop_from_peak >= Config.BASE_BUY_LEVEL_1_PCT and current_rsi < rsi_buy_filter)
-        condicion_momentum = (rise_from_valley >= getattr(Config, 'MOMENTUM_BUY_PCT', Decimal("0.01")))
+            # A1) VENTA CON PROFIT (objetivo principal del ciclo)
+            if is_profitable or trailing_triggered or (is_profitable and rsi_overbought):
+                logger.info(f"VENTA CON PROFIT: {profit_margin*100:.3f}%")
+                self._handle_sell_path(snapshot, is_stop_loss=False)
+                self._persist()
+                return
 
-        if not has_position and (condicion_caida or condicion_momentum):
-            self._execute_buy_level(1, snapshot["usdt_balance"], stop_loss_pct)
+            # A2) VENTA DEFENSIVA: El mercado empieza a caer fuerte
+            # Vende TODO el BTC ahora para recomprar mucho mas abajo
+            # Condicion: caida >= 1.2% desde pico Y RSI aun alto (mercado no en sobreventa)
+            # Esto significa que la caida recien comienza y hay mas para bajar
+            defensive_conditions = (
+                drop_from_peak >= Config.DEFENSIVE_SELL_THRESHOLD_PCT
+                and current_rsi > Config.DEFENSIVE_RSI_MAX
+                and profit_margin > Decimal("-0.008")  # No vender si ya perdimos mas del 0.8%
+            )
+            if defensive_conditions:
+                logger.warning(
+                    f"VENTA DEFENSIVA: caida {drop_from_peak*100:.2f}% | "
+                    f"RSI {current_rsi:.1f} | Convirtiendo BTC a USDT"
+                )
+                self._handle_defensive_sell(snapshot, current_price)
+                self._persist()
+                return
 
-        # DCA Nivel 2: solo si ya se compró nivel 1 y el precio sigue cayendo
-        elif (has_position
-                and not self.state_machine.buy_level_2_done
-                and drop_from_peak >= Config.BASE_BUY_LEVEL_1_PCT + Config.BASE_BUY_LEVEL_2_PCT
-                and current_rsi < Decimal("50")):
-            self._execute_buy_level(2, snapshot["usdt_balance"], stop_loss_pct)
+        # ─── MODO B: VENDIDO — esperar fondo y recomprar ────────────────────
+        elif self.state_machine.state == BotState.VENDIDO:
+            # Recompra cuando detecta rebote >= 1.0% desde el valle Y RSI sale de sobreventa
+            reentry_conditions = (
+                rise_from_valley >= Config.REENTRY_RISE_PCT
+                and current_rsi > Config.REENTRY_RSI_MIN
+                and usdt_balance >= Config.MIN_USDT_TO_OPERATE
+            )
+            if reentry_conditions:
+                dsp = self.state_machine.defensive_sell_price or current_price
+                logger.info(
+                    f"RECOMPRA INTELIGENTE: rebote {rise_from_valley*100:.2f}% desde valle | "
+                    f"RSI {current_rsi:.1f} | Vendimos a ${float(dsp):,.2f}"
+                )
+                self._execute_buy_level(1, usdt_balance, stop_loss_pct, reentry=True)
+                self._persist()
+                return
+
+        # ─── MODO C: NEUTRO con USDT — scalping normal ──────────────────────
+        elif not has_position and usdt_balance >= Config.MIN_USDT_TO_OPERATE:
+            condicion_caida = (
+                drop_from_peak >= Config.BASE_BUY_LEVEL_1_PCT
+                and current_rsi < Config.RSI_OVERSOLD
+            )
+            condicion_momentum = (rise_from_valley >= Config.MOMENTUM_BUY_PCT)
+
+            if condicion_caida or condicion_momentum:
+                self._execute_buy_level(1, usdt_balance, stop_loss_pct)
+            elif (has_position
+                    and not self.state_machine.buy_level_2_done
+                    and drop_from_peak >= Config.BASE_BUY_LEVEL_1_PCT + Config.BASE_BUY_LEVEL_2_PCT
+                    and current_rsi < 50):
+                self._execute_buy_level(2, usdt_balance, stop_loss_pct)
 
         self._persist()
+
+    def _handle_defensive_sell(self, snapshot: dict, current_price: Decimal) -> None:
+        """Vende todo el BTC para convertirlo a USDT antes de que el mercado caiga mas."""
+        active_btc = self.state_machine.active_btc
+        if active_btc < Config.MIN_BTC_TO_SELL:
+            return
+
+        validation = self.validator.validate_sell(active_btc, current_price)
+        if not validation["ok"]:
+            return
+
+        execution = self.order_manager.market_sell(validation["quantity"])
+        if execution is None:
+            self.state_machine.enter_safe_mode("Fallo en venta defensiva")
+            if self.notifier:
+                self.notifier.notify_safe_mode("Fallo venta defensiva")
+            return
+
+        exec_dict = {
+            "order_id": execution.order_id, "client_order_id": execution.client_order_id,
+            "status": "DEFENSIVE_SELL", "side": "SELL", "symbol": execution.symbol,
+            "price": str(execution.avg_price), "quantity": str(execution.executed_qty),
+            "quote_amount": str(execution.quote_qty), "fee_paid": str(execution.fee_in_usdt),
+            "fee_qty": str(execution.fee_qty), "fee_asset": execution.fee_asset,
+            "fee_in_usdt": str(execution.fee_in_usdt), "timestamp": execution.timestamp
+        }
+        self.trade_log.append(exec_dict)
+
+        if self.notifier:
+            self.notifier.send(
+                f"🛡️ *VENTA DEFENSIVA EJECUTADA*\n"
+                f"Vendí `{float(execution.executed_qty):.6f}` BTC a `${float(execution.avg_price):,.2f}`\n"
+                f"💵 USDT en caja: `${float(execution.quote_qty):,.2f}`\n"
+                f"⏳ Esperando el fondo para recomprar más barato..."
+            )
+
+        # Actualizar estado: ahora somos VENDIDO, esperando recompra
+        self.state_machine.defensive_sell_price = execution.avg_price
+        self.state_machine.active_btc = Decimal("0.0")
+        self.state_machine.active_cost_usdt = Decimal("0.0")
+        self.state_machine.buy_level_1_done = False
+        self.state_machine.buy_level_2_done = False
+        self.state_machine.transition(BotState.VENDIDO, f"Venta defensiva a ${float(execution.avg_price):,.2f}")
+        self.state_machine.register_usdt_received()
+        self.price_engine.reset_valley(execution.avg_price)
 
     def _handle_sell_path(self, snapshot: dict, is_stop_loss: bool) -> None:
         if self.state_machine.state != BotState.EN_SUBIDA and not is_stop_loss:
@@ -156,7 +237,6 @@ class DecisionEngine:
         if is_stop_loss:
             sell_qty = active_btc
         else:
-            # Profit Split: Recuperar capital + porcentaje de ganancia
             gross_value = active_btc * current_price
             net_profit_usdt = gross_value - active_cost - (gross_value * Config.BINANCE_FEE_PCT)
             target_usdt_to_receive = active_cost + (max(Decimal("0.0"), net_profit_usdt) * Config.PROFIT_SPLIT_USDT_PCT)
@@ -172,7 +252,8 @@ class DecisionEngine:
         execution = self.order_manager.market_sell(validation["quantity"])
         if execution is None:
             self.state_machine.enter_safe_mode("Fallo critico en ejecucion de venta")
-            if self.notifier: self.notifier.notify_safe_mode("Fallo una venta")
+            if self.notifier:
+                self.notifier.notify_safe_mode("Fallo una venta")
             return
 
         exec_dict = {
@@ -184,7 +265,8 @@ class DecisionEngine:
             "fee_in_usdt": str(execution.fee_in_usdt), "timestamp": execution.timestamp
         }
         self.trade_log.append(exec_dict)
-        if self.notifier: self.notifier.notify_sell(exec_dict)
+        if self.notifier:
+            self.notifier.notify_sell(exec_dict)
 
         partial_or_unfilled = execution.status != "FILLED"
         self.state_machine.register_sell(
@@ -196,26 +278,26 @@ class DecisionEngine:
             self.state_machine.enter_safe_mode(
                 f"Orden de venta no finalizada ({execution.status}). Reconciliacion manual requerida."
             )
-            if self.notifier: self.notifier.notify_safe_mode(f"Venta {execution.status}")
+            if self.notifier:
+                self.notifier.notify_safe_mode(f"Venta {execution.status}")
             self._persist()
             return
 
         if not is_stop_loss:
             self.state_machine.register_usdt_received()
-
+        self.state_machine.defensive_sell_price = None
         self.base_calculator.update(execution.avg_price, "post_sell")
         self.price_engine.reset_peak(execution.avg_price)
         self.price_engine.reset_valley(execution.avg_price)
 
-    def _execute_buy_level(self, level: int, usdt_balance: Decimal, stop_loss_pct: Decimal) -> None:
+    def _execute_buy_level(self, level: int, usdt_balance: Decimal, stop_loss_pct: Decimal, reentry: bool = False) -> None:
+        reason = "Recompra post-venta-defensiva" if reentry else f"Oportunidad de compra nivel {level}"
         if self.state_machine.state != BotState.EN_BAJADA:
-            self.state_machine.transition(BotState.EN_BAJADA, "Detectada oportunidad de compra")
+            self.state_machine.transition(BotState.EN_BAJADA, reason)
 
-        # Position Sizing con riesgo controlado
         max_loss_usdt = usdt_balance * Config.RISK_PER_TRADE_PCT
         target_quote = max_loss_usdt / stop_loss_pct if stop_loss_pct > 0 else Decimal("0.0")
 
-        # Limite por nivel
         max_allowed_quote = usdt_balance * (Config.BUY_LEVEL_1_USDT_PCT if level == 1 else Config.BUY_LEVEL_2_USDT_PCT)
         if target_quote == 0 or target_quote > max_allowed_quote:
             target_quote = max_allowed_quote
@@ -227,7 +309,8 @@ class DecisionEngine:
         execution = self.order_manager.market_buy(validation["quote_amount"])
         if execution is None:
             self.state_machine.enter_safe_mode(f"Fallo compra nivel {level}")
-            if self.notifier: self.notifier.notify_safe_mode(f"Fallo compra nivel {level}")
+            if self.notifier:
+                self.notifier.notify_safe_mode(f"Fallo compra nivel {level}")
             return
 
         exec_dict = {
@@ -239,16 +322,21 @@ class DecisionEngine:
             "fee_in_usdt": str(execution.fee_in_usdt), "timestamp": execution.timestamp
         }
         self.trade_log.append(exec_dict)
-        if self.notifier: self.notifier.notify_buy(exec_dict, level)
+        if self.notifier:
+            self.notifier.notify_buy(exec_dict, level)
 
         self.state_machine.register_buy(level, execution.quote_qty, execution.executed_qty)
+        self.state_machine.defensive_sell_price = None  # Ciclo completado exitosamente
+
         if execution.status != "FILLED":
             self.state_machine.enter_safe_mode(
                 f"Orden de compra no finalizada ({execution.status}). Reconciliacion manual requerida."
             )
-            if self.notifier: self.notifier.notify_safe_mode(f"Compra {execution.status}")
+            if self.notifier:
+                self.notifier.notify_safe_mode(f"Compra {execution.status}")
             self._persist()
             return
+
         self.state_machine.register_usdt_spent()
         self.price_engine.reset_peak(execution.avg_price)
         self.price_engine.reset_valley(execution.avg_price)
