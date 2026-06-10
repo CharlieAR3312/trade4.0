@@ -42,30 +42,44 @@ class TelegramNotifier:
     def start(self) -> None:
         self._thread.start()
         time.sleep(2)
+        # Solo intentar enviar si se inicializo correctamente
         self.send("🤖 *Bot iniciado en modo* `" + Config.TRADING_MODE + "`\nUsa /start para activar el panel.")
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._init_app())
+        try:
+            self._loop.run_until_complete(self._init_app())
+        except Exception as exc:
+            logger.error("Error critico en bucle de Telegram (el bot seguira operando sin Telegram): %s", exc)
 
     async def _init_app(self) -> None:
-        self._app = Application.builder().token(self.token).build()
-        user_filter = filters.User(user_id=self.authorized_user_id)
-        
-        self._app.add_handler(CommandHandler("start", self._cmd_start, filters=user_filter))
-        self._app.add_handler(CommandHandler("status", self._cmd_status, filters=user_filter))
-        self._app.add_handler(CommandHandler("logs", self._cmd_logs, filters=user_filter))
-        self._app.add_handler(CommandHandler("help", self._cmd_help, filters=user_filter))
-        self._app.add_handler(CommandHandler("pnl", self._cmd_pnl, filters=user_filter))
-        
-        self._app.add_handler(MessageHandler(user_filter & filters.Text(["📊 Status", "📈 PnL", "⏸️ Pause", "▶️ Resume", "🛑 STOP"]), self._handle_main_buttons))
-        self._app.add_handler(CallbackQueryHandler(self._handle_callbacks))
-        await self._app.initialize()
-        await self._app.start()
-        await self._app.updater.start_polling()
-        await asyncio.Event().wait()
+        try:
+            self._app = Application.builder().token(self.token).build()
+            user_filter = filters.User(user_id=self.authorized_user_id)
+            
+            self._app.add_handler(CommandHandler("start", self._cmd_start, filters=user_filter))
+            self._app.add_handler(CommandHandler("status", self._cmd_status, filters=user_filter))
+            self._app.add_handler(CommandHandler("logs", self._cmd_logs, filters=user_filter))
+            self._app.add_handler(CommandHandler("help", self._cmd_help, filters=user_filter))
+            self._app.add_handler(CommandHandler("pnl", self._cmd_pnl, filters=user_filter))
+            
+            self._app.add_handler(MessageHandler(user_filter & filters.Text(["📊 Status", "📈 PnL", "⏸️ Pause", "▶️ Resume", "🛑 STOP"]), self._handle_main_buttons))
+            self._app.add_handler(CallbackQueryHandler(self._handle_callbacks))
+            await self._app.initialize()
+            await self._app.start()
+            await self._app.updater.start_polling()
+            await asyncio.Event().wait()
+        except Exception as exc:
+            logger.error("Telegram deshabilitado. No se pudo iniciar el bot de Telegram: %s", exc)
+            self._app = None
+            # Mantener el hilo corriendo silenciosamente
+            while True:
+                await asyncio.sleep(3600)
 
     def send(self, message: str, keyboard=None) -> None:
+        if not self._app:
+            logger.warning("Telegram deshabilitado. Mensaje no enviado: %s", message.replace('\n', ' '))
+            return
         async def _send():
             try:
                 await self.bot.send_message(chat_id=self.chat_id, text=message, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
